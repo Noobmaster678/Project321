@@ -1,0 +1,20 @@
+# Exclude large dataset folder
+dataset/
+storage/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Node/React
+node_modules/
+dist/
+build/
+.DS_Store
+
+# Logs and DB (optional, if you want to keep them local)
+*.log
+*.db
