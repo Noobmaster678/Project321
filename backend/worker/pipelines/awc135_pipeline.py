@@ -1,21 +1,20 @@
 """
 AWC135 Species Classification Pipeline
 =======================================
-Loads the AWC135 Australian Wildlife Classifier and classifies
-cropped animal detections by species.
+Wraps awc_helpers.SpeciesClasInference to classify animal crops.
+The AWC135 model uses tf_efficientnet_b5 trained on 135 Australian species.
+
+Label format in labels.txt: "Scientific name | Common name"
+Target species entry: "Dasyurus sp | Quoll sp"
 """
-import torch
-import torch.nn.functional as F
 from pathlib import Path
-from PIL import Image
-from torchvision import transforms
-from typing import Optional
+from typing import Optional, Union
 
 from backend.app.config import settings
 
 
 class AWC135Pipeline:
-    """AWC135 species classifier wrapper."""
+    """AWC135 species classifier wrapper using awc_helpers.SpeciesClasInference."""
 
     def __init__(
         self,
@@ -25,109 +24,106 @@ class AWC135Pipeline:
     ):
         self.model_path = model_path or settings.AWC135_MODEL_PATH
         self.labels_path = labels_path or settings.AWC135_LABELS_PATH
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = None
-        self.labels = None
+        self.classifier_base = settings.AWC135_CLASSIFIER_BASE
+        self.device = device  # None = auto (cuda if available)
+        self.classifier = None  # SpeciesClasInference instance
+        self.labels: list[str] = []
         self.confidence_threshold = settings.CLASSIFICATION_CONFIDENCE_THRESHOLD
 
-        # Standard ImageNet transforms for classification
-        self.transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-
     def load_model(self):
-        """Load AWC135 classifier model and labels."""
-        if self.model is not None:
+        """Load AWC135 classifier via awc_helpers.SpeciesClasInference."""
+        if self.classifier is not None:
             return
 
-        print(f"Loading AWC135 classifier from {self.model_path}...")
-        print(f"Device: {self.device}")
+        from awc_helpers import SpeciesClasInference
 
         if not self.model_path.exists():
             raise FileNotFoundError(
-                f"AWC135 weights not found at {self.model_path}. "
-                f"Download from: https://github.com/Australian-Wildlife-Conservancy-AWC/awc-wildlife-classifier"
+                f"AWC135 weights not found at {self.model_path}.\n"
+                f"Expected: C:/Users/Admin/ml_models/awc135/awc-135-v1.pth"
             )
 
-        # Load labels
-        if self.labels_path.exists():
-            with open(self.labels_path, "r") as f:
-                self.labels = [line.strip() for line in f.readlines()]
-            print(f"  Loaded {len(self.labels)} species labels")
-        else:
-            print(f"  ⚠️ Labels file not found at {self.labels_path}")
-            self.labels = [f"class_{i}" for i in range(135)]
+        if not self.labels_path.exists():
+            raise FileNotFoundError(
+                f"AWC135 labels not found at {self.labels_path}.\n"
+                f"Expected: C:/Users/Admin/ml_models/awc135/labels.txt"
+            )
 
-        # Try loading via awc_helpers first
-        try:
-            from awc_helpers.classifier import load_classifier
-            self.model = load_classifier(str(self.model_path))
-            if hasattr(self.model, 'to'):
-                self.model.to(self.device)
-            if hasattr(self.model, 'eval'):
-                self.model.eval()
-            print("✅ AWC135 loaded via awc_helpers")
-            return
-        except ImportError:
-            pass
+        with open(self.labels_path, "r", encoding="utf-8-sig") as f:
+            self.labels = [
+                line.strip() for line in f
+                if line.strip() and not line.startswith("#")
+            ]
+        print(f"  Loaded {len(self.labels)} species labels")
 
-        # Fallback: load as standard PyTorch model
-        try:
-            self.model = torch.load(str(self.model_path), map_location=self.device)
-            if hasattr(self.model, 'eval'):
-                self.model.eval()
-            print("✅ AWC135 loaded via torch.load")
-        except Exception as e:
-            print(f"  ⚠️ Could not load model directly: {e}")
-            # Try loading state dict with a default architecture
-            checkpoint = torch.load(str(self.model_path), map_location=self.device)
-            if isinstance(checkpoint, dict) and 'model' in checkpoint:
-                self.model = checkpoint['model']
-                if hasattr(self.model, 'eval'):
-                    self.model.eval()
-                print("✅ AWC135 loaded from checkpoint dict")
-            else:
-                raise RuntimeError(f"Could not load AWC135 model from {self.model_path}")
+        force_cpu = (self.device == "cpu")
+        self.classifier = SpeciesClasInference(
+            classifier_path=str(self.model_path),
+            classifier_base=self.classifier_base,
+            label_names=self.labels,
+            clas_threshold=0.0,   # Return all top-N; we apply threshold ourselves
+            force_cpu=force_cpu,
+            skip_errors=True,
+        )
+        print(f"AWC135 loaded: {self.model_path.name}")
 
-    def classify_single(self, image_path: str | Path) -> dict:
+    def classify_single(
+        self,
+        image_path: Union[str, Path],
+        bbox: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0),
+        bbox_conf: float = 1.0,
+        top_n: int = 5,
+    ) -> dict:
         """
-        Classify a single cropped image.
+        Classify an image (or crop) using AWC135.
+
+        For pre-cropped images, leave bbox as default (full image).
+        For original images with a bounding box, pass the bbox from MegaDetector.
+
+        Args:
+            image_path: Path to image file
+            bbox: [x, y, w, h] normalized 0-1 (default = whole image)
+            bbox_conf: MegaDetector detection confidence for this bbox
+            top_n: Number of top predictions to return
 
         Returns:
             {
-                "species": "Spotted-tailed Quoll",
+                "species": "Dasyurus sp | Quoll sp",
                 "confidence": 0.87,
-                "top5": [("Spotted-tailed Quoll", 0.87), ("Brush-tailed Possum", 0.05), ...]
+                "top5": [("Dasyurus sp | Quoll sp", 0.87), ...]
             }
         """
         self.load_model()
 
         try:
-            img = Image.open(image_path).convert("RGB")
-            tensor = self.transform(img).unsqueeze(0).to(self.device)
+            results = self.classifier.predict_batch(
+                inputs=[(str(image_path), float(bbox_conf), tuple(bbox))],
+                pred_topn=top_n,
+                batch_size=1,
+                show_progress=False,
+            )
 
-            with torch.no_grad():
-                output = self.model(tensor)
-                probs = F.softmax(output, dim=1)[0]
+            if not results:
+                return {"species": None, "confidence": 0.0, "top5": []}
 
-            # Get top predictions
-            top_k = min(5, len(probs))
-            top_probs, top_indices = torch.topk(probs, top_k)
-
+            # Result tuple: (identifier, bbox_conf, bbox, label1, prob1, label2, prob2, ...)
+            row = results[0]
             top5 = []
-            for prob, idx in zip(top_probs.cpu().numpy(), top_indices.cpu().numpy()):
-                species = self.labels[idx] if idx < len(self.labels) else f"class_{idx}"
-                top5.append((species, float(prob)))
+            i = 3  # Labels/probs start at index 3
+            while i + 1 < len(row):
+                top5.append((row[i], float(row[i + 1])))
+                i += 2
+
+            if not top5:
+                return {"species": None, "confidence": 0.0, "top5": []}
 
             best_species, best_conf = top5[0]
-
             return {
                 "species": best_species,
                 "confidence": best_conf,
                 "top5": top5,
             }
+
         except Exception as e:
             return {
                 "species": None,
@@ -136,33 +132,55 @@ class AWC135Pipeline:
                 "error": str(e),
             }
 
-    def classify_batch(self, image_paths: list[str | Path]) -> list[dict]:
-        """Classify a batch of cropped images."""
+    def classify_batch(
+        self,
+        inputs: list[tuple],  # [(image_path, bbox_conf, bbox), ...]
+        top_n: int = 5,
+        batch_size: int = 4,
+    ) -> list[dict]:
+        """
+        Classify a batch of images efficiently.
+
+        Args:
+            inputs: List of (image_path, bbox_conf, bbox) tuples
+            top_n: Number of top predictions per image
+            batch_size: GPU batch size
+
+        Returns:
+            List of classification dicts (same format as classify_single)
+        """
         self.load_model()
-        results = []
-        for path in image_paths:
-            try:
-                result = self.classify_single(path)
-                results.append(result)
-            except Exception as e:
-                results.append({
-                    "species": None,
-                    "confidence": 0.0,
-                    "top5": [],
-                    "error": str(e),
-                })
-        return results
+
+        normalized = [(str(p), float(c), tuple(b)) for p, c, b in inputs]
+
+        try:
+            all_results = self.classifier.predict_batch(
+                inputs=normalized,
+                pred_topn=top_n,
+                batch_size=batch_size,
+                show_progress=False,
+            )
+        except Exception as e:
+            return [{"species": None, "confidence": 0.0, "top5": [], "error": str(e)}] * len(inputs)
+
+        output = []
+        for row in all_results:
+            top5 = []
+            i = 3
+            while i + 1 < len(row):
+                top5.append((row[i], float(row[i + 1])))
+                i += 2
+
+            if top5:
+                output.append({"species": top5[0][0], "confidence": top5[0][1], "top5": top5})
+            else:
+                output.append({"species": None, "confidence": 0.0, "top5": []})
+
+        return output
 
     def is_target_species(self, classification: dict) -> bool:
         """Check if the classification matches the target species (quoll)."""
-        species = classification.get("species", "")
+        species = classification.get("species") or ""
         confidence = classification.get("confidence", 0.0)
-
-        if species is None:
-            return False
-
         target = settings.TARGET_SPECIES.lower()
-        return (
-            target in species.lower()
-            and confidence >= self.confidence_threshold
-        )
+        return target in species.lower() and confidence >= self.confidence_threshold

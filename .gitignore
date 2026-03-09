@@ -1,12 +1,15 @@
-# Exclude large dataset folder
+# Large data — never commit
 dataset/
 storage/
+ml_models/
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
 venv/
+.venv/
 .env
 
 # Node/React
@@ -15,6 +18,10 @@ dist/
 build/
 .DS_Store
 
-# Logs and DB (optional, if you want to keep them local)
+# Logs and DB — local only
 *.log
 *.db
+
+# IDE
+.vscode/
+.idea/

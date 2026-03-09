@@ -19,15 +19,17 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///./wildlife.db"  # SQLite for dev
     # DATABASE_URL: str = "postgresql+asyncpg://user:pass@localhost/wildlife"  # Postgres for prod
 
-    # --- ML Models ---
-    MEGADETECTOR_MODEL_PATH: Path = Path(r"I:/AA-Study/Project321/ml_models/megadetector/md_v5a.0.0.pt")
-    AWC135_MODEL_PATH: Path = Path(r"I:/AA-Study/Project321/ml_models/awc135/awc135_weights.pth")
-    AWC135_LABELS_PATH: Path = Path(r"I:/AA-Study/Project321/ml_models/awc135/labels.txt")
+    # --- ML Models (stored outside project dir, not version-controlled) ---
+    MEGADETECTOR_MODEL_PATH: Path = Path(r"C:/Users/Admin/ml_models/megadetector/md_v5a.0.0.pt")
+    AWC135_MODEL_PATH: Path = Path(r"C:/Users/Admin/ml_models/awc135/awc-135-v1.pth")
+    AWC135_LABELS_PATH: Path = Path(r"C:/Users/Admin/ml_models/awc135/labels.txt")
+    AWC135_CLASSIFIER_BASE: str = "tf_efficientnet_b5.ns_jft_in1k"
 
     # --- Detection Thresholds ---
-    DETECTION_CONFIDENCE_THRESHOLD: float = 0.2  # MegaDetector min confidence
+    DETECTION_CONFIDENCE_THRESHOLD: float = 0.1   # MegaDetector min confidence
     CLASSIFICATION_CONFIDENCE_THRESHOLD: float = 0.5  # AWC135 min confidence
-    TARGET_SPECIES: str = "Spotted-tailed Quoll"
+    # Matches label format in labels.txt: "Dasyurus sp | Quoll sp"
+    TARGET_SPECIES: str = "Quoll"
 
     # --- Processing ---
     BATCH_SIZE: int = 8  # Images per GPU batch (RTX 3080 10GB safe)

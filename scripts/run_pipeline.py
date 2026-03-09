@@ -83,31 +83,40 @@ async def process_batch(
 
             img.has_animal = True
 
-            # Step 2: For each animal detection, crop and classify
+            # Step 2: For each animal detection, classify + save crop for UI
             for i, det in enumerate(animal_detections):
-                # Save crop
+                bbox = det["bbox"]
+                bbox_conf = det["confidence"]
+
+                # Classify using original image + bbox (AWC135 crops internally)
+                classification = awc_pipeline.classify_single(
+                    img_path,
+                    bbox=bbox,
+                    bbox_conf=bbox_conf,
+                )
+
+                # Save crop for annotation UI
                 crop_filename = f"{img.id}_{i}.jpg"
                 crop_dir = settings.STORAGE_ROOT / "crops" / str(img.camera_id or "unknown")
                 crop_path = crop_dir / crop_filename
-
-                md_pipeline.crop_detection(img_path, det["bbox"], crop_path)
-
-                # Step 3: AWC135 classification
-                classification = awc_pipeline.classify_single(crop_path)
+                try:
+                    md_pipeline.crop_detection(img_path, bbox, crop_path)
+                except Exception:
+                    crop_path = None
 
                 # Save detection to DB
                 detection = Detection(
                     image_id=img.id,
-                    bbox_x=det["bbox"][0],
-                    bbox_y=det["bbox"][1],
-                    bbox_w=det["bbox"][2],
-                    bbox_h=det["bbox"][3],
-                    detection_confidence=det["confidence"],
+                    bbox_x=bbox[0],
+                    bbox_y=bbox[1],
+                    bbox_w=bbox[2],
+                    bbox_h=bbox[3],
+                    detection_confidence=bbox_conf,
                     category=det["category"],
                     species=classification.get("species"),
                     classification_confidence=classification.get("confidence"),
                     model_version="MDv5a+AWC135",
-                    crop_path=str(crop_path.relative_to(settings.STORAGE_ROOT)) if crop_path.exists() else None,
+                    crop_path=str(crop_path.relative_to(settings.STORAGE_ROOT)) if crop_path and crop_path.exists() else None,
                 )
                 db.add(detection)
 

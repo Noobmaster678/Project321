@@ -1,11 +1,10 @@
 """
 MegaDetector Pipeline
 =====================
-Loads MegaDetector v5a and runs batch inference on images.
-Returns bounding boxes for detected animals.
+Wraps MegaDetector v5a for animal detection using the megadetector package.
+Returns normalized bounding boxes [x, y, w, h] for detected animals.
 """
 import torch
-import numpy as np
 from pathlib import Path
 from PIL import Image
 from typing import Optional
@@ -16,8 +15,7 @@ from backend.app.config import settings
 class MegaDetectorPipeline:
     """MegaDetector v5a wrapper for animal detection."""
 
-    # MegaDetector categories
-    CATEGORIES = {1: "animal", 2: "person", 3: "vehicle"}
+    CATEGORIES = {"1": "animal", "2": "person", "3": "vehicle"}
 
     def __init__(self, model_path: Optional[Path] = None, device: Optional[str] = None):
         self.model_path = model_path or settings.MEGADETECTOR_MODEL_PATH
@@ -26,108 +24,63 @@ class MegaDetectorPipeline:
         self.confidence_threshold = settings.DETECTION_CONFIDENCE_THRESHOLD
 
     def load_model(self):
-        """Load the MegaDetector YOLOv5 model."""
+        """Load MegaDetector v5a via the megadetector package."""
         if self.model is not None:
             return
 
-        print(f"Loading MegaDetector from {self.model_path}...")
-        print(f"Device: {self.device}")
-
         if not self.model_path.exists():
             raise FileNotFoundError(
-                f"MegaDetector weights not found at {self.model_path}. "
-                f"Download from: https://github.com/agentmorris/MegaDetector/releases/download/v5.0/md_v5a.0.0.pt"
+                f"MegaDetector weights not found at {self.model_path}.\n"
+                f"Expected: C:/Users/Admin/ml_models/megadetector/md_v5a.0.0.pt"
             )
 
-        # Load YOLOv5 model via torch.hub or megadetector package
-        try:
-            from megadetector.detection.run_detector import load_detector
-            self.model = load_detector(str(self.model_path))
-            print("✅ MegaDetector loaded via megadetector package")
-        except ImportError:
-            # Fallback: load via torch hub
-            self.model = torch.hub.load('ultralytics/yolov5', 'custom', path=str(self.model_path))
-            self.model.to(self.device)
-            self.model.conf = self.confidence_threshold
-            print("✅ MegaDetector loaded via torch.hub")
+        from megadetector.detection.run_detector import load_detector
+        print(f"Loading MegaDetector from {self.model_path.name} on {self.device}...")
+        self.model = load_detector(str(self.model_path))
+        print(f"MegaDetector loaded OK")
 
     def detect_single(self, image_path: str | Path) -> list[dict]:
         """
         Run MegaDetector on a single image.
 
-        Returns list of detections:
-        [
-            {
-                "bbox": [x, y, w, h],  # normalized 0-1
-                "confidence": 0.95,
-                "category": "animal"
-            }
-        ]
+        Returns list of animal detections:
+        [{"bbox": [x, y, w, h], "confidence": 0.95, "category": "animal"}]
+        Bbox values are normalized 0-1.
         """
         self.load_model()
+        image_path = Path(image_path)
 
-        try:
-            from megadetector.detection.run_detector import run_detector_on_image
-            result = run_detector_on_image(self.model, str(image_path))
+        with Image.open(image_path) as img:
+            img.load()
+            result = self.model.generate_detections_one_image(
+                img,
+                str(image_path),
+                detection_threshold=self.confidence_threshold,
+            )
 
-            detections = []
-            if "detections" in result:
-                for det in result["detections"]:
-                    conf = det.get("conf", 0.0)
-                    if conf < self.confidence_threshold:
-                        continue
+        detections = []
+        for det in result.get("detections") or []:
+            conf = det.get("conf", 0.0)
+            if conf < self.confidence_threshold:
+                continue
+            category = self.CATEGORIES.get(str(det.get("category", "1")), "unknown")
+            detections.append({
+                "bbox": list(det["bbox"]),  # [x, y, w, h] normalized
+                "confidence": float(conf),
+                "category": category,
+            })
 
-                    category_id = det.get("category", "1")
-                    category = self.CATEGORIES.get(int(category_id), "unknown")
-
-                    bbox = det.get("bbox", [0, 0, 0, 0])  # [x, y, w, h] normalized
-                    detections.append({
-                        "bbox": bbox,
-                        "confidence": conf,
-                        "category": category,
-                    })
-
-            return detections
-
-        except ImportError:
-            # Fallback: use YOLOv5 directly
-            img = Image.open(image_path)
-            results = self.model(img)
-
-            detections = []
-            for *xyxy, conf, cls in results.xyxy[0].cpu().numpy():
-                if conf < self.confidence_threshold:
-                    continue
-
-                # Convert from xyxy to normalized xywh
-                w_img, h_img = img.size
-                x1, y1, x2, y2 = xyxy
-                bbox = [
-                    x1 / w_img,
-                    y1 / h_img,
-                    (x2 - x1) / w_img,
-                    (y2 - y1) / h_img,
-                ]
-
-                category = self.CATEGORIES.get(int(cls) + 1, "unknown")
-                detections.append({
-                    "bbox": bbox,
-                    "confidence": float(conf),
-                    "category": category,
-                })
-
-            return detections
+        return detections
 
     def detect_batch(self, image_paths: list[str | Path]) -> list[list[dict]]:
-        """Run MegaDetector on a batch of images."""
+        """Run MegaDetector on a list of images, returning one result list per image."""
         self.load_model()
         results = []
         for path in image_paths:
             try:
-                dets = self.detect_single(path)
-                results.append(dets)
+                results.append(self.detect_single(path))
             except Exception as e:
-                print(f"  ⚠️ Error processing {path}: {e}")
+                print(f"  Warning: error processing {path}: {e}")
                 results.append([])
         return results
 
@@ -136,25 +89,24 @@ class MegaDetectorPipeline:
         image_path: str | Path,
         bbox: list[float],
         output_path: str | Path,
-        padding: float = 0.1,
+        padding: float = 0.05,
     ) -> Path:
         """
-        Crop a detection from an image and save it.
+        Crop a bounding box from an image and save it for the annotation UI.
 
         Args:
-            image_path: Path to source image
-            bbox: [x, y, w, h] normalized 0-1
+            image_path: Source image path
+            bbox: [x, y, w, h] normalized 0-1 (MegaDetector format)
             output_path: Where to save the crop
-            padding: Extra padding around bbox (fraction of bbox size)
+            padding: Extra padding fraction around the bbox
 
         Returns:
-            Path to saved crop
+            Path to the saved crop file
         """
         img = Image.open(image_path)
         w_img, h_img = img.size
 
         x, y, w, h = bbox
-        # Add padding
         pad_x = w * padding
         pad_y = h * padding
 
@@ -168,5 +120,6 @@ class MegaDetectorPipeline:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         crop.save(str(output_path), quality=95)
+        img.close()
 
         return output_path
