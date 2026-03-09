@@ -2,6 +2,7 @@
 dataset/
 storage/
 ml_models/
+exports/
 
 # Python
 __pycache__/

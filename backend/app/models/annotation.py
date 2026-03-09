@@ -10,13 +10,14 @@ class Annotation(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     detection_id = Column(Integer, ForeignKey("detections.id"), nullable=False, index=True)
-    annotator = Column(String, nullable=True)  # who reviewed
-    corrected_species = Column(String, nullable=True)  # if species was wrong
-    is_correct = Column(Boolean, nullable=True)  # True if ML was right
+    annotator = Column(String, nullable=True)
+    corrected_species = Column(String, nullable=True)
+    is_correct = Column(Boolean, nullable=True)
     notes = Column(String, nullable=True)
+    individual_id = Column(String, nullable=True)
+    flag_for_retraining = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    # Relationships
     detection = relationship("Detection", back_populates="annotations")
 
     def __repr__(self):

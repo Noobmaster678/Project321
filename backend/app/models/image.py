@@ -1,11 +1,15 @@
 """Image model — core entity representing a camera trap photo."""
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Float
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Index
 from sqlalchemy.orm import relationship
 from backend.app.db.base import Base
 
 
 class Image(Base):
     __tablename__ = "images"
+    __table_args__ = (
+        Index("idx_images_camera_time", "camera_id", "captured_at"),
+        Index("idx_images_processed", "processed", "has_animal"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String, nullable=False)  # e.g., "RCNX0001.JPG"

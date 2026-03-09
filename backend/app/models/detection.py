@@ -1,5 +1,5 @@
 """Detection model — a bounding box + classification from ML pipeline."""
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 from backend.app.db.base import Base
@@ -7,6 +7,9 @@ from backend.app.db.base import Base
 
 class Detection(Base):
     __tablename__ = "detections"
+    __table_args__ = (
+        Index("idx_detections_species_conf", "species", "classification_confidence"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     image_id = Column(Integer, ForeignKey("images.id"), nullable=False, index=True)

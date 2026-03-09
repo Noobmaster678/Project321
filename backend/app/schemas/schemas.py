@@ -1,10 +1,38 @@
 """Pydantic schemas for API request/response models."""
 from datetime import datetime
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Optional, Any
 
 
-# --- Camera ---
+# ---------------------------------------------------------------------------
+# Auth / User
+# ---------------------------------------------------------------------------
+class UserCreate(BaseModel):
+    email: str
+    full_name: Optional[str] = None
+    password: str = Field(min_length=8)
+    role: str = "reviewer"
+
+
+class UserOut(BaseModel):
+    id: int
+    email: str
+    full_name: Optional[str] = None
+    role: str
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    model_config = {"from_attributes": True}
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    role: str
+
+
+# ---------------------------------------------------------------------------
+# Camera
+# ---------------------------------------------------------------------------
 class CameraBase(BaseModel):
     name: str
     camera_number: Optional[int] = None
@@ -19,7 +47,9 @@ class CameraOut(CameraBase):
     model_config = {"from_attributes": True}
 
 
-# --- Collection ---
+# ---------------------------------------------------------------------------
+# Collection
+# ---------------------------------------------------------------------------
 class CollectionBase(BaseModel):
     name: str
     collection_number: Optional[int] = None
@@ -31,7 +61,70 @@ class CollectionOut(CollectionBase):
     model_config = {"from_attributes": True}
 
 
-# --- Image ---
+# ---------------------------------------------------------------------------
+# Detection
+# ---------------------------------------------------------------------------
+class DetectionBase(BaseModel):
+    image_id: int
+    bbox_x: float
+    bbox_y: float
+    bbox_w: float
+    bbox_h: float
+    detection_confidence: float
+    category: Optional[str] = None
+    species: Optional[str] = None
+    classification_confidence: Optional[float] = None
+
+
+class DetectionOut(DetectionBase):
+    id: int
+    model_version: Optional[str] = None
+    crop_path: Optional[str] = None
+    created_at: Optional[datetime] = None
+    model_config = {"from_attributes": True}
+
+
+class DetectionDetail(DetectionOut):
+    """Detection with nested image, camera, and annotations."""
+    image: Optional["ImageOut"] = None
+    camera: Optional[CameraOut] = None
+    annotations: list["AnnotationOut"] = []
+
+
+# ---------------------------------------------------------------------------
+# Annotation
+# ---------------------------------------------------------------------------
+class AnnotationCreate(BaseModel):
+    detection_id: int
+    corrected_species: Optional[str] = None
+    is_correct: Optional[bool] = None
+    notes: Optional[str] = None
+    individual_id: Optional[str] = None
+    flag_for_retraining: bool = False
+
+
+class AnnotationUpdate(BaseModel):
+    corrected_species: Optional[str] = None
+    is_correct: Optional[bool] = None
+    notes: Optional[str] = None
+    individual_id: Optional[str] = None
+    flag_for_retraining: Optional[bool] = None
+
+
+class AnnotationOut(BaseModel):
+    id: int
+    detection_id: int
+    annotator: Optional[str] = None
+    corrected_species: Optional[str] = None
+    is_correct: Optional[bool] = None
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Image
+# ---------------------------------------------------------------------------
 class ImageBase(BaseModel):
     filename: str
     file_path: str
@@ -53,31 +146,12 @@ class ImageOut(ImageBase):
 class ImageDetail(ImageOut):
     camera: Optional[CameraOut] = None
     collection: Optional[CollectionOut] = None
-    detections: list["DetectionOut"] = []
+    detections: list[DetectionOut] = []
 
 
-# --- Detection ---
-class DetectionBase(BaseModel):
-    image_id: int
-    bbox_x: float
-    bbox_y: float
-    bbox_w: float
-    bbox_h: float
-    detection_confidence: float
-    category: Optional[str] = None
-    species: Optional[str] = None
-    classification_confidence: Optional[float] = None
-
-
-class DetectionOut(DetectionBase):
-    id: int
-    model_version: Optional[str] = None
-    crop_path: Optional[str] = None
-    created_at: Optional[datetime] = None
-    model_config = {"from_attributes": True}
-
-
-# --- Individual ---
+# ---------------------------------------------------------------------------
+# Individual
+# ---------------------------------------------------------------------------
 class IndividualBase(BaseModel):
     individual_id: str
     species: str = "Spotted-tailed Quoll"
@@ -92,7 +166,60 @@ class IndividualOut(IndividualBase):
     model_config = {"from_attributes": True}
 
 
-# --- Stats ---
+# ---------------------------------------------------------------------------
+# Processing Job
+# ---------------------------------------------------------------------------
+class JobStatus(BaseModel):
+    id: int
+    batch_name: Optional[str] = None
+    status: str
+    total_images: int = 0
+    processed_images: int = 0
+    failed_images: int = 0
+    percent: float = 0.0
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    model_config = {"from_attributes": True}
+
+
+class BatchUploadResponse(BaseModel):
+    job_id: int
+    files_received: int
+    status: str = "queued"
+
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
+class ReportOut(BaseModel):
+    total_images: int = 0
+    processed_images: int = 0
+    empty_images: int = 0
+    total_detections: int = 0
+    total_species: int = 0
+    quoll_detections: int = 0
+    mean_detection_confidence: Optional[float] = None
+    mean_classification_confidence: Optional[float] = None
+    processing_time_seconds: Optional[float] = None
+    species_distribution: list[dict] = []
+    camera_counts: list[dict] = []
+    hourly_activity: list[dict] = []
+
+
+class ExportRequest(BaseModel):
+    format: str = "csv"  # csv, json, pdf
+    species_filter: Optional[str] = None
+    min_confidence: Optional[float] = None
+    camera_ids: Optional[list[int]] = None
+    collection_ids: Optional[list[int]] = None
+    include_annotations: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Dashboard / Stats
+# ---------------------------------------------------------------------------
 class DashboardStats(BaseModel):
     total_images: int = 0
     processed_images: int = 0
@@ -104,9 +231,12 @@ class DashboardStats(BaseModel):
     total_cameras: int = 0
     total_collections: int = 0
     processing_percent: float = 0.0
+    pending_review: int = 0
 
 
-# --- Import ---
+# ---------------------------------------------------------------------------
+# Import / Pagination
+# ---------------------------------------------------------------------------
 class ImportResult(BaseModel):
     cameras_created: int = 0
     collections_created: int = 0
@@ -116,7 +246,6 @@ class ImportResult(BaseModel):
     errors: list[str] = []
 
 
-# --- Pagination ---
 class PaginatedResponse(BaseModel):
     items: list = []
     total: int = 0
