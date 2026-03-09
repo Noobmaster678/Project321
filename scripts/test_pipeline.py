@@ -140,13 +140,23 @@ def run_test(image_paths: list[Path], verbose: bool = False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test the ML detection pipeline")
-    parser.add_argument("--n", type=int, default=5, help="Number of random images to test (default: 5)")
-    parser.add_argument("--image", type=str, default=None, help="Test a specific image file path")
+    parser.add_argument("--n", type=int, default=5, help="Number of random images to test")
+    parser.add_argument("--image", type=str, default=None, help="Test a specific image file")
+    parser.add_argument("--dir", type=str, default=None, help="Run pipeline on all images in a directory")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print results for every detection")
     args = parser.parse_args()
 
     if args.image:
         images = [Path(args.image)]
+
+    elif args.dir:
+        dir_path = Path(args.dir)
+        if not dir_path.exists():
+            raise FileNotFoundError(f"Directory not found: {dir_path}")
+
+        images = list(dir_path.rglob("*.JPG")) + list(dir_path.rglob("*.jpg"))
+        print(f"Found {len(images)} images in {dir_path}")
+
     else:
         print(f"Picking {args.n} random images from dataset...")
         images = find_sample_images(args.n)
