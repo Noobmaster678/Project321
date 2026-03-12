@@ -5,9 +5,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.app.config import settings
 
+
+def _resolved_database_url() -> str:
+    """Resolve SQLite relative paths to project-root absolute paths."""
+    url = settings.DATABASE_URL
+    prefix = "sqlite+aiosqlite:///./"
+    if url.startswith(prefix):
+        db_name = url[len(prefix):]
+        db_path = (settings.PROJECT_ROOT / db_name).resolve()
+        return f"sqlite+aiosqlite:///{db_path.as_posix()}"
+    return url
+
+
 # Create async engine
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    _resolved_database_url(),
     echo=False,
     future=True,
 )

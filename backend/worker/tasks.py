@@ -47,7 +47,7 @@ async def _process_single_image(db: AsyncSession, image: Image, md, awc):
     """Process one image: MegaDetector -> crop -> AWC135 -> save detections."""
     img_path = settings.DATASET_ROOT / image.file_path
     if not img_path.exists():
-        img_path = settings.STORAGE_ROOT / "uploads" / image.file_path
+        img_path = settings.STORAGE_ROOT / image.file_path
     if not img_path.exists():
         image.processed = True
         image.has_animal = False

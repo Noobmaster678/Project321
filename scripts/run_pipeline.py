@@ -25,6 +25,7 @@ from backend.app.db.base import Base
 # Import models
 from backend.app.models.image import Image
 from backend.app.models.detection import Detection
+from backend.app.models import camera, collection, annotation, individual, sighting, user, job  # noqa: F401
 
 # Import pipelines
 from backend.worker.pipelines.megadetector_pipeline import MegaDetectorPipeline

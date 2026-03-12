@@ -8,7 +8,7 @@ import {
     fetchStats, fetchImages, fetchIndividuals, fetchCollectionStats, fetchCameraStats,
     fetchSpeciesCounts, fetchReport, fetchDetectionDetail, fetchAnnotations,
     createAnnotation, uploadBatch, fetchJobStatus, fetchUsers, changeUserRole,
-    fetchSystemMetrics, register, getExportUrl, getQuollExportUrl, getMetadataExportUrl,
+    fetchSystemMetrics, register, getExportUrl, getQuollExportUrl, getMetadataExportUrl, fetchImagesBySpecies,
     storageUrl,
     type DashboardStats, type ImageData, type IndividualData, type CollectionStat,
     type CameraStat, type SpeciesCount, type PaginatedResponse, type ReportData,
@@ -125,9 +125,32 @@ function Dashboard() {
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        Promise.all([fetchStats(), fetchCollectionStats(), fetchCameraStats(), fetchSpeciesCounts()])
-            .then(([s, c, cam, sp]) => { setStats(s); setCollections(c); setCameras(cam); setSpecies(sp); })
-            .catch((e) => setError(e.message)).finally(() => setLoading(false));
+        let alive = true;
+
+        const loadAll = async (showSpinner = false) => {
+            if (showSpinner) setLoading(true);
+            try {
+                const [s, c, cam, sp] = await Promise.all([fetchStats(), fetchCollectionStats(), fetchCameraStats(), fetchSpeciesCounts()]);
+                if (!alive) return;
+                setStats(s);
+                setCollections(c);
+                setCameras(cam);
+                setSpecies(sp);
+                setError(null);
+            } catch (e: any) {
+                if (!alive) return;
+                setError(e.message);
+            } finally {
+                if (alive) setLoading(false);
+            }
+        };
+
+        loadAll(true);
+        const pollId = window.setInterval(() => loadAll(false), 5000);
+        return () => {
+            alive = false;
+            window.clearInterval(pollId);
+        };
     }, []);
 
     if (loading) return <LoadingState />;
@@ -213,16 +236,49 @@ function ImageBrowser() {
     const [page, setPage] = useState(1);
     const [filterProcessed, setFilterProcessed] = useState('all');
     const [filterAnimal, setFilterAnimal] = useState('all');
+    const [filterSpecies, setFilterSpecies] = useState('all');
+    const [selectedImage, setSelectedImage] = useState<ImageData | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
+    const sortedItems = images
+        ? [...images.items].sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true, sensitivity: 'base' }))
+        : [];
+
     useEffect(() => {
         setLoading(true);
+        setError(null);
         const params: any = { page, per_page: 48 };
         if (filterProcessed !== 'all') params.processed = filterProcessed === 'yes';
         if (filterAnimal !== 'all') params.has_animal = filterAnimal === 'yes';
-        fetchImages(params).then(setImages).catch((e) => setError(e.message)).finally(() => setLoading(false));
-    }, [page, filterProcessed, filterAnimal]);
+        const request = filterSpecies === 'quoll' ? fetchImagesBySpecies('quoll', params) : fetchImages(params);
+        request.then(setImages).catch((e) => setError(e.message)).finally(() => setLoading(false));
+    }, [page, filterProcessed, filterAnimal, filterSpecies]);
+
+    const selectedIndex = selectedImage
+        ? sortedItems.findIndex((img) => img.id === selectedImage.id)
+        : -1;
+
+    const showPrevImage = useCallback(() => {
+        if (selectedIndex <= 0) return;
+        setSelectedImage(sortedItems[selectedIndex - 1]);
+    }, [selectedIndex, sortedItems]);
+
+    const showNextImage = useCallback(() => {
+        if (selectedIndex < 0 || selectedIndex >= sortedItems.length - 1) return;
+        setSelectedImage(sortedItems[selectedIndex + 1]);
+    }, [selectedIndex, sortedItems]);
+
+    useEffect(() => {
+        if (!selectedImage) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'ArrowLeft') showPrevImage();
+            if (e.key === 'ArrowRight') showNextImage();
+            if (e.key === 'Escape') setSelectedImage(null);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [selectedImage, showPrevImage, showNextImage]);
 
     return (
         <>
@@ -234,6 +290,9 @@ function ImageBrowser() {
                 <select className="filter-select" value={filterAnimal} onChange={(e) => { setFilterAnimal(e.target.value); setPage(1); }}>
                     <option value="all">All Results</option><option value="yes">Has Animal</option><option value="no">Empty</option>
                 </select>
+                <select className="filter-select" value={filterSpecies} onChange={(e) => { setFilterSpecies(e.target.value); setPage(1); }}>
+                    <option value="all">All Species</option><option value="quoll">Quoll Only</option>
+                </select>
                 {images && <span className="tag tag-muted">{fmt(images.total)} images</span>}
             </div>
             {loading ? <LoadingState /> : error ? <ErrorState message={error} /> : !images || images.items.length === 0 ? (
@@ -241,10 +300,10 @@ function ImageBrowser() {
             ) : (
                 <>
                     <div className="image-grid">
-                        {images.items.map((img) => (
-                            <div key={img.id} className="image-card">
+                        {sortedItems.map((img) => (
+                            <div key={img.id} className="image-card" onClick={() => setSelectedImage(img)} style={{ cursor: 'pointer' }}>
                                 <div className="image-thumb">
-                                    {img.thumbnail_path ? <img src={storageUrl(img.thumbnail_path)} alt={img.filename} /> : '📷'}
+                                    {(img.thumbnail_path || img.file_path) ? <img src={storageUrl(img.thumbnail_path || img.file_path)} alt={img.filename} /> : '📷'}
                                     {img.has_animal && <div style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(16,185,129,0.9)', borderRadius: '6px', padding: '2px 6px', fontSize: '0.65rem', fontWeight: 700, color: 'white' }}>ANIMAL</div>}
                                 </div>
                                 <div className="image-info">
@@ -265,6 +324,39 @@ function ImageBrowser() {
                         </div>
                     )}
                 </>
+            )}
+            {selectedImage && (
+                <div onClick={() => setSelectedImage(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'grid', placeItems: 'center', zIndex: 1000, padding: '1rem' }}>
+                    <div className="card" onClick={(e) => e.stopPropagation()} style={{ width: 'min(900px, 100%)', maxHeight: '90vh', overflow: 'auto' }}>
+                        <div className="card-header" style={{ justifyContent: 'space-between' }}>
+                            <h3>{selectedImage.filename}</h3>
+                            <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                <button className="btn btn-outline" onClick={showPrevImage} disabled={selectedIndex <= 0}>← Prev</button>
+                                <button className="btn btn-outline" onClick={showNextImage} disabled={selectedIndex >= sortedItems.length - 1}>Next →</button>
+                                <button className="btn btn-outline" onClick={() => setSelectedImage(null)}>Close</button>
+                            </div>
+                        </div>
+                        <div className="card-body">
+                            <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
+                                <img
+                                    src={storageUrl(selectedImage.file_path)}
+                                    alt={selectedImage.filename}
+                                    style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: 8 }}
+                                />
+                            </div>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '0.75rem' }}>
+                                Use keyboard: Left/Right arrows to navigate, Esc to close
+                            </div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                <span className="tag tag-muted">Image #{selectedImage.id}</span>
+                                {selectedImage.processed ? <span className="tag tag-primary">Processed</span> : <span className="tag tag-muted">Pending</span>}
+                                {selectedImage.has_animal === true && <span className="tag tag-info">Has Animal</span>}
+                                {selectedImage.has_animal === false && <span className="tag tag-muted">Empty</span>}
+                                {selectedImage.camera_id && <span className="tag tag-info">Cam {selectedImage.camera_id}</span>}
+                            </div>
+                        </div>
+                    </div>
+                </div>
             )}
         </>
     );
@@ -366,15 +458,23 @@ function BatchUpload() {
     const [uploading, setUploading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const fileRef = useRef<HTMLInputElement>(null);
+    const folderRef = useRef<HTMLInputElement>(null);
 
     const handleUpload = async () => {
-        const files = fileRef.current?.files;
+        const folderFiles = folderRef.current?.files;
+        const files = folderFiles && folderFiles.length > 0 ? folderFiles : fileRef.current?.files;
         if (!files || files.length === 0) return;
         setUploading(true); setError(null);
         try {
             const res = await uploadBatch(files);
             pollJob(res.job_id);
-        } catch (e: any) { setError(e.message); setUploading(false); }
+        } catch (e: any) {
+            const msg = e?.message?.includes('fetch')
+                ? 'Upload connection dropped. Try smaller batches or retry; large folders are uploaded in chunks now.'
+                : e.message;
+            setError(msg);
+            setUploading(false);
+        }
     };
 
     const pollJob = useCallback(async (jobId: number) => {
@@ -392,7 +492,22 @@ function BatchUpload() {
             <div className="page-header"><h2>Batch Upload</h2><p>Upload camera trap images for ML processing</p></div>
             <div className="card" style={{ marginBottom: '1.5rem' }}>
                 <div className="card-body">
-                    <input ref={fileRef} type="file" multiple accept=".jpg,.jpeg,.png" style={{ marginBottom: '1rem' }} />
+                    <div style={{ display: 'grid', gap: '0.75rem', marginBottom: '1rem' }}>
+                        <div>
+                            <label style={{ display: 'block', fontSize: '0.8rem', marginBottom: '0.25rem' }}>Upload files</label>
+                            <input ref={fileRef} type="file" multiple accept=".jpg,.jpeg,.png" />
+                        </div>
+                        <div>
+                            <label style={{ display: 'block', fontSize: '0.8rem', marginBottom: '0.25rem' }}>Upload folder</label>
+                            <input
+                                ref={folderRef}
+                                type="file"
+                                multiple
+                                accept=".jpg,.jpeg,.png"
+                                {...({ webkitdirectory: '', directory: '' } as any)}
+                            />
+                        </div>
+                    </div>
                     <br />
                     <button className="btn btn-primary" onClick={handleUpload} disabled={uploading}>{uploading ? 'Uploading...' : 'Upload & Process'}</button>
                     {error && <p style={{ color: 'var(--danger)', marginTop: '0.5rem' }}>{error}</p>}
@@ -405,6 +520,9 @@ function BatchUpload() {
                         <div className="progress-bar-bg"><div className="progress-bar-fill" style={{ width: `${job.percent}%` }} /></div>
                         <div className="progress-label"><span>{job.processed_images} / {job.total_images} processed</span><span>{job.percent.toFixed(1)}%</span></div>
                         {job.failed_images > 0 && <p style={{ color: 'var(--danger)', marginTop: '0.5rem' }}>{job.failed_images} failed</p>}
+                        {job.status === 'failed' && job.error_message && (
+                            <p style={{ color: 'var(--danger)', marginTop: '0.5rem' }}>{job.error_message}</p>
+                        )}
                     </div>
                 </div>
             )}
@@ -424,6 +542,24 @@ function Reports() {
     if (loading) return <LoadingState />;
     if (error) return <ErrorState message={error} />;
     if (!report) return null;
+
+    const downloadFile = async (url: string, filename: string) => {
+        try {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`Download failed (${res.status})`);
+            const blob = await res.blob();
+            const objectUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = objectUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(objectUrl);
+        } catch (e: any) {
+            setError(e.message || 'Download failed');
+        }
+    };
 
     return (
         <>
@@ -498,10 +634,10 @@ function Reports() {
             <div className="card">
                 <div className="card-header"><h3>Export</h3></div>
                 <div className="card-body" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    <a href={getExportUrl('csv')} className="btn btn-outline" download>Report CSV</a>
-                    <a href={getExportUrl('json')} className="btn btn-outline" download>Report JSON</a>
-                    <a href={getQuollExportUrl('csv')} className="btn btn-primary" download>Quoll Detections CSV</a>
-                    <a href={getMetadataExportUrl('csv')} className="btn btn-outline" download>Full Metadata CSV</a>
+                    <button className="btn btn-outline" onClick={() => downloadFile(getExportUrl('csv'), 'wildlife_report.csv')}>Report CSV</button>
+                    <button className="btn btn-outline" onClick={() => downloadFile(getExportUrl('json'), 'wildlife_report.json')}>Report JSON</button>
+                    <button className="btn btn-primary" onClick={() => downloadFile(getQuollExportUrl('csv'), 'quoll_detections.csv')}>Quoll Detections CSV</button>
+                    <button className="btn btn-outline" onClick={() => downloadFile(getMetadataExportUrl('csv'), 'full_metadata.csv')}>Full Metadata CSV</button>
                 </div>
             </div>
         </>

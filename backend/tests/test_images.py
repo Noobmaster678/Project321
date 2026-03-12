@@ -88,6 +88,28 @@ async def test_upload_single(client: AsyncClient, test_user):
 
 
 @pytest.mark.asyncio
+async def test_upload_single_duplicate_filename_gets_suffix(client: AsyncClient, test_user):
+    fake_jpg_a = io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+    fake_jpg_b = io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x01" * 100)
+
+    resp1 = await client.post(
+        "/api/images/upload",
+        files={"file": ("same_name.jpg", fake_jpg_a, "image/jpeg")},
+        headers=auth_header(test_user),
+    )
+    resp2 = await client.post(
+        "/api/images/upload",
+        files={"file": ("same_name.jpg", fake_jpg_b, "image/jpeg")},
+        headers=auth_header(test_user),
+    )
+
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+    assert resp1.json()["file_path"] != resp2.json()["file_path"]
+    assert resp2.json()["filename"].startswith("same_name_")
+
+
+@pytest.mark.asyncio
 async def test_upload_bad_format(client: AsyncClient, test_user):
     resp = await client.post(
         "/api/images/upload",

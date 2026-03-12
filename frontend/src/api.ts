@@ -141,6 +141,7 @@ export interface JobStatus {
     processed_images: number;
     failed_images: number;
     percent: number;
+    error_message?: string | null;
     started_at: string | null;
     completed_at: string | null;
 }
@@ -239,19 +240,59 @@ export async function fetchImages(params: {
     return res.json();
 }
 
+export async function fetchImagesBySpecies(
+    species: string,
+    params: { page?: number; per_page?: number } = {},
+): Promise<PaginatedResponse<ImageData>> {
+    const sp = new URLSearchParams();
+    if (params.page) sp.set('page', String(params.page));
+    if (params.per_page) sp.set('per_page', String(params.per_page));
+    const res = await fetch(`${API_BASE}/images/by-species/${encodeURIComponent(species)}?${sp}`);
+    if (!res.ok) throw new Error('Failed to fetch images by species');
+    return res.json();
+}
+
 export async function fetchImageDetail(id: number) {
     const res = await fetch(`${API_BASE}/images/${id}`);
     if (!res.ok) throw new Error('Failed to fetch image');
     return res.json();
 }
 
-export async function uploadBatch(files: FileList, cameraId?: number): Promise<{ job_id: number; files_received: number }> {
-    const form = new FormData();
-    for (const f of files) form.append('files', f);
-    if (cameraId) form.append('camera_id', String(cameraId));
-    const res = await apiFetch(`${API_BASE}/images/upload-batch`, { method: 'POST', body: form });
-    if (!res.ok) throw new Error('Upload failed');
-    return res.json();
+export async function uploadBatch(
+    files: FileList,
+    cameraId?: number,
+): Promise<{ job_id: number; files_received: number }> {
+    // Large folders can reset dev-server proxy/backend connections if sent in one request.
+    // Upload in chunks and append to the same backend job.
+    const CHUNK_SIZE = 200;
+    const allFiles = Array.from(files);
+    let jobId: number | null = null;
+    let received = 0;
+
+    for (let i = 0; i < allFiles.length; i += CHUNK_SIZE) {
+        const chunk = allFiles.slice(i, i + CHUNK_SIZE);
+        const form = new FormData();
+        for (const f of chunk) form.append('files', f);
+        if (cameraId) form.append('camera_id', String(cameraId));
+
+        const query = new URLSearchParams();
+        if (jobId != null) query.set('job_id', String(jobId));
+        const url = query.toString()
+            ? `${API_BASE}/images/upload-batch?${query.toString()}`
+            : `${API_BASE}/images/upload-batch`;
+
+        const res = await apiFetch(url, { method: 'POST', body: form });
+        if (!res.ok) throw new Error('Upload failed');
+        const data = await res.json();
+        jobId = data.job_id;
+        received += data.files_received ?? chunk.length;
+    }
+
+    if (jobId == null) {
+        throw new Error('No files to upload');
+    }
+
+    return { job_id: jobId, files_received: received };
 }
 
 export async function fetchJobStatus(jobId: number): Promise<JobStatus> {
