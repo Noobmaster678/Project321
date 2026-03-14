@@ -15,6 +15,7 @@ import {
     type DetectionDetail, type AnnotationData, type JobStatus, type UserData,
 } from './api';
 import './index.css';
+import AdminPage from './AdminPage';
 
 /* Fix Leaflet default icon paths */
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -51,7 +52,7 @@ function AppShell() {
                     <Route path="/upload" element={<RequireAuth><BatchUpload /></RequireAuth>} />
                     <Route path="/reports" element={<Reports />} />
                     <Route path="/review/:detectionId" element={<RequireAuth><ImageReview /></RequireAuth>} />
-                    <Route path="/admin" element={<RequireAuth role="admin"><AdminPanel /></RequireAuth>} />
+                    <Route path="/admin" element={<RequireAuth role="admin"><AdminPage /></RequireAuth>} />
                     <Route path="/login" element={<LoginPage />} />
                     <Route path="*" element={<Navigate to="/" />} />
                 </Routes>
