@@ -259,21 +259,21 @@ export async function fetchImageDetail(id: number) {
 }
 
 export async function uploadBatch(
-    files: FileList,
-    cameraId?: number,
+    files: File[],
+    collectionName?: string,
 ): Promise<{ job_id: number; files_received: number }> {
-    // Large folders can reset dev-server proxy/backend connections if sent in one request.
-    // Upload in chunks and append to the same backend job.
     const CHUNK_SIZE = 200;
-    const allFiles = Array.from(files);
     let jobId: number | null = null;
     let received = 0;
 
-    for (let i = 0; i < allFiles.length; i += CHUNK_SIZE) {
-        const chunk = allFiles.slice(i, i + CHUNK_SIZE);
+    for (let i = 0; i < files.length; i += CHUNK_SIZE) {
+        const chunk = files.slice(i, i + CHUNK_SIZE);
         const form = new FormData();
         for (const f of chunk) form.append('files', f);
-        if (cameraId) form.append('camera_id', String(cameraId));
+
+        const relativePaths = chunk.map((f) => (f as any).webkitRelativePath || f.name);
+        form.append('relative_paths', JSON.stringify(relativePaths));
+        if (collectionName) form.append('collection_name', collectionName);
 
         const query = new URLSearchParams();
         if (jobId != null) query.set('job_id', String(jobId));
@@ -398,4 +398,18 @@ export async function fetchSystemMetrics() {
 
 export function storageUrl(path: string): string {
     return `${STORAGE_BASE}/${path}`;
+}
+
+// ---- Missed detection (user correction: "model said no animal but there is one")
+export async function createMissedDetection(
+    imageId: number,
+    payload: { bbox_x: number; bbox_y: number; bbox_w: number; bbox_h: number; species: string; flag_for_retraining?: boolean },
+): Promise<{ id: number; image_id: number; species: string; created_at: string | null }> {
+    const res = await apiFetch(`${API_BASE}/images/${imageId}/missed-detection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, flag_for_retraining: payload.flag_for_retraining ?? true }),
+    });
+    if (!res.ok) throw new Error('Failed to submit correction');
+    return res.json();
 }

@@ -10,7 +10,7 @@ from backend.app.db.base import Base
 from backend.app.db.session import engine
 
 # Import all models so Base.metadata knows about them
-from backend.app.models import camera, collection, image, detection, annotation, individual, sighting  # noqa: F401
+from backend.app.models import camera, collection, image, detection, annotation, individual, sighting, missed_correction  # noqa: F401
 from backend.app.models import user, job  # noqa: F401
 
 

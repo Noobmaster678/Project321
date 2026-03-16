@@ -149,6 +149,29 @@ class ImageDetail(ImageOut):
     detections: list[DetectionOut] = []
 
 
+class MissedDetectionCreate(BaseModel):
+    bbox_x: float
+    bbox_y: float
+    bbox_w: float
+    bbox_h: float
+    species: str
+    flag_for_retraining: bool = True
+
+
+class MissedDetectionOut(BaseModel):
+    id: int
+    image_id: int
+    bbox_x: float
+    bbox_y: float
+    bbox_w: float
+    bbox_h: float
+    species: str
+    annotator: Optional[str] = None
+    flag_for_retraining: bool = True
+    created_at: Optional[datetime] = None
+    model_config = {"from_attributes": True}
+
+
 # ---------------------------------------------------------------------------
 # Individual
 # ---------------------------------------------------------------------------

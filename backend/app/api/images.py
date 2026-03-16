@@ -3,21 +3,24 @@ import asyncio
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File, Form
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+import json
 
 from backend.app.config import settings
 from backend.app.db.session import get_db, async_session_factory
 from backend.app.models.image import Image
 from backend.app.models.detection import Detection
+from backend.app.models.missed_correction import MissedDetectionCorrection
 from backend.app.models.camera import Camera
 from backend.app.models.collection import Collection
 from backend.app.models.job import ProcessingJob
 from backend.app.models.user import User
 from backend.app.schemas.schemas import (
     ImageOut, ImageDetail, PaginatedResponse, BatchUploadResponse, JobStatus,
+    MissedDetectionCreate, MissedDetectionOut,
 )
 from backend.app.utils.dependencies import get_current_user, get_optional_user
 
@@ -181,6 +184,33 @@ async def get_image(image_id: int, db: AsyncSession = Depends(get_db)):
     return ImageDetail.model_validate(image)
 
 
+@router.post("/{image_id:int}/missed-detection", response_model=MissedDetectionOut, status_code=201)
+async def create_missed_detection(
+    image_id: int,
+    payload: MissedDetectionCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """User reports a missed animal: draw bbox on image and label species (feedback for model refinement)."""
+    image = (await db.execute(select(Image).where(Image.id == image_id))).scalar_one_or_none()
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+    correction = MissedDetectionCorrection(
+        image_id=image_id,
+        bbox_x=payload.bbox_x,
+        bbox_y=payload.bbox_y,
+        bbox_w=payload.bbox_w,
+        bbox_h=payload.bbox_h,
+        species=payload.species,
+        annotator=user.email,
+        flag_for_retraining=payload.flag_for_retraining,
+    )
+    db.add(correction)
+    await db.flush()
+    await db.refresh(correction)
+    return MissedDetectionOut.model_validate(correction)
+
+
 @router.get("/by-species/{species}", response_model=PaginatedResponse)
 async def images_by_species(
     species: str,
@@ -247,24 +277,104 @@ async def upload_image(
     return ImageOut.model_validate(image)
 
 
+def _extract_camera_name(relative_path: str) -> str | None:
+    """Extract the camera subfolder name from a relative path like 'Collection/CAM01/IMG.jpg'."""
+    parts = Path(relative_path).parts
+    if len(parts) >= 3:
+        return parts[1]
+    if len(parts) == 2:
+        return None
+    return None
+
+
+def _extract_collection_name(relative_path: str) -> str | None:
+    """Extract the root collection folder from a relative path like 'Collection/CAM01/IMG.jpg'."""
+    parts = Path(relative_path).parts
+    if len(parts) >= 2:
+        return parts[0]
+    return None
+
+
+async def _get_or_create_camera(db: AsyncSession, name: str, cache: dict[str, int]) -> int:
+    """Find or create a Camera by name, using a local cache to avoid repeated queries."""
+    if name in cache:
+        return cache[name]
+    row = (await db.execute(select(Camera).where(Camera.name == name))).scalar_one_or_none()
+    if row:
+        cache[name] = row.id
+        return row.id
+    cam = Camera(name=name)
+    db.add(cam)
+    await db.flush()
+    cache[name] = cam.id
+    return cam.id
+
+
+async def _get_or_create_collection(db: AsyncSession, name: str, cache: dict[str, int]) -> int:
+    """Find or create a Collection by name, using a local cache."""
+    if name in cache:
+        return cache[name]
+    row = (await db.execute(select(Collection).where(Collection.name == name))).scalar_one_or_none()
+    if row:
+        cache[name] = row.id
+        return row.id
+    col = Collection(name=name, folder_path=name)
+    db.add(col)
+    await db.flush()
+    cache[name] = col.id
+    return col.id
+
+
 @router.post("/upload-batch", response_model=BatchUploadResponse)
 async def upload_batch(
     files: list[UploadFile] = File(...),
+    relative_paths: str | None = Form(None),
+    collection_name: str | None = Form(None),
     camera_id: int | None = None,
     collection_id: int | None = None,
     job_id: int | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upload multiple images and queue a batch processing job."""
+    """Upload multiple images and queue a batch processing job.
+
+    When `relative_paths` is provided (JSON array of browser webkitRelativePath strings),
+    the endpoint auto-creates Collection and Camera records from the folder structure.
+    """
+    paths_list: list[str] = []
+    if relative_paths:
+        try:
+            paths_list = json.loads(relative_paths)
+        except (json.JSONDecodeError, TypeError):
+            paths_list = []
+
+    camera_cache: dict[str, int] = {}
+    collection_cache: dict[str, int] = {}
+
     image_ids = []
     reserved_rel_paths: set[str] = set()
-    for f in files:
+
+    for idx, f in enumerate(files):
         ext = Path(f.filename or "unknown.jpg").suffix.lower()
         if ext not in (".jpg", ".jpeg", ".png"):
             continue
 
-        dest, rel_path, saved_name = await _reserve_unique_upload_path(db, f.filename, reserved_rel_paths)
+        rel_path_from_browser = paths_list[idx] if idx < len(paths_list) else None
+        use_path = rel_path_from_browser or f.filename
+
+        file_camera_id = camera_id
+        file_collection_id = collection_id
+
+        if rel_path_from_browser:
+            col_name = collection_name or _extract_collection_name(rel_path_from_browser)
+            cam_name = _extract_camera_name(rel_path_from_browser)
+
+            if col_name and file_collection_id is None:
+                file_collection_id = await _get_or_create_collection(db, col_name, collection_cache)
+            if cam_name and file_camera_id is None:
+                file_camera_id = await _get_or_create_camera(db, cam_name, camera_cache)
+
+        dest, rel_path, saved_name = await _reserve_unique_upload_path(db, use_path, reserved_rel_paths)
         dest.parent.mkdir(parents=True, exist_ok=True)
         with open(dest, "wb") as out:
             shutil.copyfileobj(f.file, out)
@@ -272,8 +382,8 @@ async def upload_batch(
         image = Image(
             filename=saved_name,
             file_path=rel_path,
-            camera_id=camera_id,
-            collection_id=collection_id,
+            camera_id=file_camera_id,
+            collection_id=file_collection_id,
         )
         db.add(image)
         await db.flush()
@@ -291,8 +401,9 @@ async def upload_batch(
             job.error_message = None
             job.failed_images = 0
     else:
+        batch_label = collection_name or (list(collection_cache.keys())[0] if collection_cache else f"batch-{len(image_ids)}-files")
         job = ProcessingJob(
-            batch_name=f"batch-upload-{len(image_ids)}-files",
+            batch_name=batch_label,
             status="queued",
             total_images=len(image_ids),
             created_by=user.id,
