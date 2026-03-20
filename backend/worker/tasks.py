@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.worker.celery_app import celery_app
@@ -44,7 +44,7 @@ def _ensure_pipelines():
 
 
 async def _process_single_image(db: AsyncSession, image: Image, md, awc):
-    """Process one image: MegaDetector -> crop -> AWC135 -> save detections."""
+    """Process one image: extract EXIF -> MegaDetector -> crop -> AWC135 -> save detections."""
     img_path = settings.DATASET_ROOT / image.file_path
     if not img_path.exists():
         img_path = settings.STORAGE_ROOT / image.file_path
@@ -52,6 +52,19 @@ async def _process_single_image(db: AsyncSession, image: Image, md, awc):
         image.processed = True
         image.has_animal = False
         return
+
+    from backend.app.utils.exif import extract_image_metadata
+    meta = extract_image_metadata(img_path)
+    if meta.get("width"):
+        image.width = meta["width"]
+    if meta.get("height"):
+        image.height = meta["height"]
+    if meta.get("captured_at") and not image.captured_at:
+        image.captured_at = meta["captured_at"]
+    if meta.get("temperature_c") is not None:
+        image.temperature_c = meta["temperature_c"]
+    if meta.get("trigger_mode"):
+        image.trigger_mode = meta["trigger_mode"]
 
     detections = md.detect_single(img_path)
     animal_dets = [d for d in detections if d["category"] == "animal"]
@@ -133,6 +146,45 @@ async def _run_process_batch(job_id: int, image_ids: list[int]):
             job.status = "completed"
             job.completed_at = datetime.now(timezone.utc)
             await db.commit()
+
+    # Post-processing: assign event IDs based on camera+time grouping
+    try:
+        from backend.app.utils.event_grouping import assign_event_ids
+        async with async_session_factory() as db:
+            await assign_event_ids(db)
+            await db.commit()
+    except Exception:
+        pass
+
+    # Post-processing: compute deployment trap-nights from image date ranges
+    try:
+        await _update_deployment_trap_nights()
+    except Exception:
+        pass
+
+
+async def _update_deployment_trap_nights():
+    """Compute trap_nights for each deployment from the min/max captured_at of its images."""
+    from backend.app.models.deployment import Deployment
+    async with async_session_factory() as db:
+        deps = (await db.execute(select(Deployment))).scalars().all()
+        for dep in deps:
+            q = select(
+                func.min(Image.captured_at).label("first"),
+                func.max(Image.captured_at).label("last"),
+            ).where(
+                Image.camera_id == dep.camera_id,
+                Image.captured_at.isnot(None),
+            )
+            if dep.collection_id:
+                q = q.where(Image.collection_id == dep.collection_id)
+            row = (await db.execute(q)).one_or_none()
+            if row and row.first and row.last:
+                dep.start_date = row.first.date()
+                dep.end_date = row.last.date()
+                delta = (row.last - row.first).total_seconds() / 86400.0
+                dep.trap_nights = max(delta, 1.0)
+        await db.commit()
 
 
 @celery_app.task(name="backend.worker.tasks.process_image_task", bind=True)
