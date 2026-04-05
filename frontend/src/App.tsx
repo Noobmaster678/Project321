@@ -9,10 +9,11 @@ import {
     fetchSpeciesCounts, fetchReport, fetchDetectionDetail, fetchAnnotations, fetchDetections,
     createAnnotation, uploadBatch, fetchJobStatus, fetchUsers, changeUserRole,
     fetchSystemMetrics, register, getExportUrl, getQuollExportUrl, getMetadataExportUrl, fetchImagesBySpecies, fetchImageDetail,
-    storageUrl, createMissedDetection,
+    storageUrl, createMissedDetection, fetchReviewQueue,
     type DashboardStats, type ImageData, type IndividualData, type CollectionStat,
     type CameraStat, type SpeciesCount, type PaginatedResponse, type ReportData,
     type DetectionDetail, type AnnotationData, type JobStatus, type UserData, type Detection,
+    type ReviewQueueCounts,
 } from './api';
 import './index.css';
 
@@ -25,6 +26,15 @@ L.Icon.Default.mergeOptions({
 });
 
 const CHART_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+
+/** Show Camera / Filename instead of just filename to disambiguate Reconyx images */
+function displayImageName(img: { filename: string; file_path: string }): string {
+    if (!img.file_path) return img.filename;
+    const parts = img.file_path.replace(/\\/g, '/').split('/');
+    if (parts.length >= 3) return parts.slice(-2).join(' / ');
+    if (parts.length === 2) return parts.join(' / ');
+    return img.filename;
+}
 
 function App() {
     return (
@@ -190,52 +200,70 @@ function HelpPage() {
    PENDING REVIEW (design: metrics, category cards, review list)
    ============================================================ */
 function PendingReviewPage() {
-    const [stats, setStats] = useState<DashboardStats | null>(null);
-    const [report, setReport] = useState<ReportData | null>(null);
-    const [detections, setDetections] = useState<Detection[]>([]);
-    const [emptyImages, setEmptyImages] = useState<PaginatedResponse<ImageData> | null>(null);
+    const [queue, setQueue] = useState<ReviewQueueCounts | null>(null);
+    const [cameras, setCameras] = useState<CameraStat[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [filter, setFilter] = useState<string | null>(null);
-    const [search, setSearch] = useState('');
-    const [focusSpecies, setFocusSpecies] = useState<'quoll' | 'all'>('quoll');
+    const [filterDetections, setFilterDetections] = useState<Detection[]>([]);
+    const [filterImages, setFilterImages] = useState<PaginatedResponse<ImageData> | null>(null);
+    const [filterLoading, setFilterLoading] = useState(false);
+    const [filterPage, setFilterPage] = useState(1);
+    const [reviewIdx, setReviewIdx] = useState(0);
+    const [sessionStart] = useState(Date.now());
+    const [reviewed, setReviewed] = useState(0);
+    const [cameraFilter, setCameraFilter] = useState<number | undefined>(undefined);
+    const [dateFrom, setDateFrom] = useState('');
+    const [dateTo, setDateTo] = useState('');
 
     useEffect(() => {
-        let alive = true;
-        const load = async () => {
-            setLoading(true);
-            try {
-                const [s, r, detRes, emptyRes] = await Promise.all([
-                    fetchStats(),
-                    fetchReport(),
-                    fetchDetections({ per_page: 200, min_confidence: 0 }),
-                    fetchImages({ has_animal: false, per_page: 50 }),
-                ]);
-                if (!alive) return;
-                setStats(s);
-                setReport(r);
-                setDetections(detRes.items || []);
-                setEmptyImages(emptyRes);
-                setError(null);
-            } catch (e: any) {
-                setError(e.message);
-            } finally {
-                if (alive) setLoading(false);
+        Promise.all([fetchReviewQueue(), fetchCameraStats()])
+            .then(([q, c]) => { setQueue(q); setCameras(c); })
+            .catch((e: any) => setError(e.message))
+            .finally(() => setLoading(false));
+    }, [reviewed]);
+
+    const loadCategory = async (cat: string, page = 1) => {
+        setFilterLoading(true);
+        setFilterPage(page);
+        setReviewIdx(0);
+        try {
+            if (cat === 'verify-quolls') {
+                const res = await fetchDetections({ species: 'quoll', review_status: 'unreviewed', per_page: 50, page, camera_id: cameraFilter, date_from: dateFrom || undefined, date_to: dateTo || undefined });
+                setFilterDetections(res.items);
+            } else if (cat === 'low-confidence') {
+                const res = await fetchDetections({ max_confidence: 0.5, review_status: 'unreviewed', per_page: 50, page, category: 'animal', camera_id: cameraFilter, date_from: dateFrom || undefined, date_to: dateTo || undefined });
+                setFilterDetections(res.items);
+            } else if (cat === 'empty-check') {
+                const res = await fetchImages({ has_animal: false, per_page: 50, page, camera_id: cameraFilter });
+                setFilterImages(res);
+            } else if (cat === 'assign-individual') {
+                const res = await fetchDetections({ species: 'quoll', review_status: 'verified', per_page: 50, page, camera_id: cameraFilter });
+                setFilterDetections(res.items);
             }
-        };
-        load();
-    }, []);
-
-    const lowConf = detections.filter((d) => (d.detection_confidence < 0.7) || (d.classification_confidence != null && d.classification_confidence < 0.7));
-    const highConf = detections.filter((d) => d.detection_confidence >= 0.7 && (d.classification_confidence == null || d.classification_confidence >= 0.7));
-    const noAnimalCount = emptyImages?.total ?? report?.empty_images ?? 0;
-
-    const metrics = {
-        lowConf: lowConf.length,
-        conflict: 0,
-        noAnimal: noAnimalCount,
-        newIndividual: Math.min(highConf.length, 50),
+        } catch { }
+        setFilterLoading(false);
     };
+
+    const openCategory = (cat: string) => {
+        setFilter(cat);
+        setFilterDetections([]);
+        setFilterImages(null);
+        loadCategory(cat);
+    };
+
+    // Keyboard shortcuts for review mode
+    useEffect(() => {
+        if (!filter || filter === 'empty-check') return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'ArrowRight' || e.key === 's') setReviewIdx((i) => Math.min(i + 1, filterDetections.length - 1));
+            if (e.key === 'ArrowLeft') setReviewIdx((i) => Math.max(i - 1, 0));
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    });
+
+    const sessionMinutes = Math.floor((Date.now() - sessionStart) / 60000);
 
     if (loading) return <LoadingState />;
     if (error) return <ErrorState message={error} />;
@@ -249,116 +277,278 @@ function PendingReviewPage() {
             </nav>
             <div className="page-header">
                 <h1 className="pending-review-title">Pending Reviews for Verification</h1>
-                <p className="pending-review-subtitle">Review and verify AI-detected images for Spotted-tail Quolls.</p>
+                <p className="pending-review-subtitle">Review and verify AI-detected images. Keyboard: arrow keys to navigate, Y/N for quick review.</p>
             </div>
 
             <div className="review-metrics">
-                <div className="review-metric-card warning">
-                    <span className="dot yellow" /><span className="icon">⚠</span>
-                    <div><strong>{fmt(metrics.lowConf)}</strong> Low Confidence Identifications</div>
+                <div className="review-metric-card success" style={{ cursor: 'pointer' }} onClick={() => openCategory('verify-quolls')}>
+                    <span className="dot green" /><span className="icon">Q</span>
+                    <div><strong>{fmt(queue?.verify_quolls ?? 0)}</strong> Verify Quoll Detections</div>
                 </div>
-                <div className="review-metric-card danger">
-                    <span className="dot red" /><span className="icon">✕</span>
-                    <div><strong>{fmt(metrics.conflict)}</strong> Conflict Detections</div>
+                <div className="review-metric-card warning" style={{ cursor: 'pointer' }} onClick={() => openCategory('low-confidence')}>
+                    <span className="dot yellow" /><span className="icon">?</span>
+                    <div><strong>{fmt(queue?.low_confidence ?? 0)}</strong> Low Confidence</div>
                 </div>
-                <div className="review-metric-card muted">
-                    <span className="dot gray" /><span className="icon">↻</span>
-                    <div><strong>{fmt(metrics.noAnimal)}</strong> No Animal Detected</div>
+                <div className="review-metric-card muted" style={{ cursor: 'pointer' }} onClick={() => openCategory('empty-check')}>
+                    <span className="dot gray" /><span className="icon">~</span>
+                    <div><strong>{fmt(queue?.empty_check ?? 0)}</strong> Check Empty Images</div>
                 </div>
-                <div className="review-metric-card success">
-                    <span className="dot green" /><span className="icon">+</span>
-                    <div><strong>{fmt(metrics.newIndividual)}</strong> New Individuals Potential</div>
+                <div className="review-metric-card" style={{ cursor: 'pointer', borderLeft: '4px solid var(--accent)' }} onClick={() => openCategory('assign-individual')}>
+                    <span className="dot" style={{ background: 'var(--accent)' }} /><span className="icon">ID</span>
+                    <div><strong>{fmt(queue?.assign_individual ?? 0)}</strong> Assign Individual IDs</div>
                 </div>
             </div>
 
+            {/* Session progress bar */}
+            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '1rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                <span>Reviewed: <strong>{reviewed}</strong></span>
+                <span>Session: <strong>{sessionMinutes}min</strong></span>
+                <span>Pending: <strong>{fmt(queue?.total_pending ?? 0)}</strong></span>
+            </div>
+
+            {/* Filter toolbar */}
             <div className="review-toolbar">
-                <input type="search" className="review-search" placeholder="Search by filename, camera trap, or date" value={search} onChange={(e) => setSearch(e.target.value)} />
-                <select className="filter-select"><option>Spotted-tail Quoll</option><option>All Species</option></select>
-                <select className="filter-select"><option>Date Range</option></select>
-                <select className="filter-select"><option>Camera Location</option></select>
-                <select className="filter-select"><option>Sort by Date</option></select>
+                <select className="filter-select" value={cameraFilter ?? ''} onChange={(e) => { setCameraFilter(e.target.value ? Number(e.target.value) : undefined); }}>
+                    <option value="">All Cameras</option>
+                    {cameras.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <input type="date" className="filter-select" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} title="Date from" />
+                <input type="date" className="filter-select" value={dateTo} onChange={(e) => setDateTo(e.target.value)} title="Date to" />
+                {filter && <button className="btn btn-outline" onClick={() => loadCategory(filter)}>Apply filters</button>}
             </div>
 
             {!filter ? (
                 <div className="review-category-grid">
-                    <ReviewCategoryCard title="Low confidence" tag={`${lowConf.length > 0 ? Math.round((lowConf[0].detection_confidence || 0) * 100) : 0}% - Low Confidence`} tagClass="warning" imageCount={lowConf.length} onReview={() => setFilter('low-confidence')} />
-                    <ReviewCategoryCard title="Conflict" tag="Conflict" tagClass="danger" imageCount={metrics.conflict} onReview={() => setFilter('conflict')} />
-                    <ReviewCategoryCard title="New Individual" tag="89% - High" tagClass="success" imageCount={metrics.newIndividual} onReview={() => setFilter('new-individual')} />
-                    <ReviewCategoryCard title="No Animal (Miss fire)" tag="No Detection" tagClass="muted" imageCount={metrics.noAnimal} onReview={() => setFilter('no-animal')} />
+                    <ReviewCategoryCard title="Verify Quoll Detections" description="Confirm or correct quoll identifications" tagClass="success" imageCount={queue?.verify_quolls ?? 0} onReview={() => openCategory('verify-quolls')} />
+                    <ReviewCategoryCard title="Low Confidence" description="Detections where the model was uncertain" tagClass="warning" imageCount={queue?.low_confidence ?? 0} onReview={() => openCategory('low-confidence')} />
+                    <ReviewCategoryCard title="Check Empty Images" description="Spot-check images marked as empty for missed animals" tagClass="muted" imageCount={queue?.empty_check ?? 0} onReview={() => openCategory('empty-check')} />
+                    <ReviewCategoryCard title="Assign Individual IDs" description="Assign quoll IDs to verified detections" tagClass="accent" imageCount={queue?.assign_individual ?? 0} onReview={() => openCategory('assign-individual')} />
                 </div>
             ) : (
                 <div className="review-list-view">
-                    <button type="button" className="btn btn-outline" style={{ marginBottom: '1rem' }} onClick={() => setFilter(null)}>← Back to categories</button>
-                    {filter === 'low-confidence' && (
-                        <div className="review-item-grid">
-                            {lowConf.slice(0, 20).map((d) => (
-                                <div key={d.id} className="review-item-card">
-                                    <div className="review-item-tags">
-                                        <span className={`tag tag-${(d.detection_confidence || 0) >= 0.7 ? 'primary' : 'accent'}`}>{Math.round((d.detection_confidence || 0) * 100)}%</span>
-                                        <span className="tag tag-muted">Low Confidence</span>
-                                    </div>
-                                    <div>Image Count — 1</div>
-                                    <div className="review-item-model">Model: YOLOV8</div>
-                                    <Link to={`/review/${d.id}`} className="btn btn-primary" style={{ marginTop: '0.75rem' }}>Review</Link>
-                                </div>
-                            ))}
-                        </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
+                        <button type="button" className="btn btn-outline" onClick={() => { setFilter(null); setFilterDetections([]); setFilterImages(null); }}>← Back to categories</button>
+                        {filter !== 'empty-check' && filterDetections.length > 0 && (
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                                Detection {reviewIdx + 1} of {filterDetections.length} — Use arrow keys / Y / N
+                            </span>
+                        )}
+                    </div>
+
+                    {filterLoading && <LoadingState />}
+
+                    {/* Verify Quolls / Low Confidence / Assign Individual — detection-based review */}
+                    {!filterLoading && filter !== 'empty-check' && filterDetections.length > 0 && (
+                        <ReviewDetectionInline
+                            detections={filterDetections}
+                            currentIdx={reviewIdx}
+                            onNavigate={setReviewIdx}
+                            onReviewed={() => setReviewed((r) => r + 1)}
+                            mode={filter === 'assign-individual' ? 'assign-id' : 'verify'}
+                        />
                     )}
-                    {filter === 'no-animal' && emptyImages && (
-                        <div className="review-item-grid">
-                            {emptyImages.items.map((img) => (
-                                <div key={img.id} className="review-item-card">
-                                    <div className="review-item-tags"><span className="tag tag-muted">No Animal</span></div>
-                                    <div>{img.filename}</div>
-                                    <Link to={`/review-empty/${img.id}`} className="btn btn-primary" style={{ marginTop: '0.75rem' }}>Annotate (add animal)</Link>
-                                </div>
-                            ))}
-                        </div>
+                    {!filterLoading && filter !== 'empty-check' && filterDetections.length === 0 && (
+                        <div className="empty-state"><h3>All caught up</h3><p>No detections in this category need review.</p></div>
                     )}
-                    {(filter === 'conflict' || filter === 'new-individual') && (
+
+                    {/* Empty check — image-based review */}
+                    {!filterLoading && filter === 'empty-check' && filterImages && (
                         <div className="review-item-grid">
-                            {(filter === 'new-individual' ? highConf : detections).slice(0, 20).map((d) => (
-                                <div key={d.id} className="review-item-card">
-                                    <div className="review-item-tags">
-                                        <span className="tag tag-primary">{Math.round((d.detection_confidence || 0) * 100)}%</span>
+                            {filterImages.items.map((img) => {
+                                const displayName = img.file_path ? img.file_path.split('/').slice(-2).join(' / ') : img.filename;
+                                return (
+                                    <div key={img.id} className="review-item-card">
+                                        <div className="review-item-thumb" style={{ height: 120, overflow: 'hidden', borderRadius: 6, marginBottom: '0.5rem' }}>
+                                            {(img.thumbnail_path || img.file_path) && <img src={storageUrl(img.thumbnail_path || img.file_path)} alt={img.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+                                        </div>
+                                        <div className="review-item-tags"><span className="tag tag-muted">Empty</span></div>
+                                        <div style={{ fontSize: '0.8rem', marginTop: '0.25rem' }}>{displayName}</div>
+                                        <Link to={`/review-image/${img.id}`} className="btn btn-primary" style={{ marginTop: '0.75rem' }}>Check Image</Link>
                                     </div>
-                                    <Link to={`/review/${d.id}`} className="btn btn-primary" style={{ marginTop: '0.75rem' }}>Review</Link>
+                                );
+                            })}
+                            {filterImages.pages > 1 && (
+                                <div className="pagination" style={{ gridColumn: '1/-1' }}>
+                                    <button className="page-btn" onClick={() => loadCategory('empty-check', filterPage - 1)} disabled={filterPage <= 1}>Prev</button>
+                                    <span className="page-info">Page {filterPage} of {filterImages.pages}</span>
+                                    <button className="page-btn" onClick={() => loadCategory('empty-check', filterPage + 1)} disabled={filterPage >= filterImages.pages}>Next</button>
                                 </div>
-                            ))}
+                            )}
                         </div>
                     )}
                 </div>
             )}
+        </div>
+    );
+}
 
-            <div className="review-side-panels">
-                <div className="review-panel card">
-                    <h4>Analytics Overview</h4>
-                    <p>Reviews Completed This Week: <strong>{report?.processed_images ?? 0}</strong></p>
-                    <p>Average Model Confidence: <strong>76%</strong></p>
-                    <p>Most Common Pending: <span className="tag tag-accent">Low Confidence</span></p>
+/** Inline detection review with auto-advance and keyboard shortcuts */
+function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed, mode }: {
+    detections: Detection[];
+    currentIdx: number;
+    onNavigate: (idx: number) => void;
+    onReviewed: () => void;
+    mode: 'verify' | 'assign-id';
+}) {
+    const det = detections[currentIdx];
+    const [detail, setDetail] = useState<DetectionDetail | null>(null);
+    const [saving, setSaving] = useState(false);
+    const [correctedSpecies, setCorrectedSpecies] = useState('');
+    const [individualId, setIndividualId] = useState('');
+    const [notes, setNotes] = useState('');
+    const [lastAction, setLastAction] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!det) return;
+        setDetail(null);
+        setCorrectedSpecies('');
+        setIndividualId('');
+        setNotes('');
+        setLastAction(null);
+        fetchDetectionDetail(det.id).then(setDetail).catch(() => {});
+    }, [det?.id]);
+
+    const advance = () => {
+        onReviewed();
+        if (currentIdx < detections.length - 1) onNavigate(currentIdx + 1);
+    };
+
+    const submitVerdict = async (isCorrect: boolean) => {
+        if (!det) return;
+        setSaving(true);
+        try {
+            await createAnnotation({
+                detection_id: det.id,
+                is_correct: isCorrect,
+                corrected_species: !isCorrect && correctedSpecies ? correctedSpecies : undefined,
+                notes: notes || undefined,
+                flag_for_retraining: !isCorrect,
+            });
+            setLastAction(isCorrect ? 'Confirmed correct' : 'Marked incorrect');
+            setTimeout(advance, 400);
+        } catch { }
+        setSaving(false);
+    };
+
+    const submitIndividualId = async () => {
+        if (!det || !individualId) return;
+        setSaving(true);
+        try {
+            await createAnnotation({
+                detection_id: det.id,
+                is_correct: true,
+                individual_id: individualId,
+                notes: notes || undefined,
+            });
+            setLastAction(`Assigned: ${individualId}`);
+            setTimeout(advance, 400);
+        } catch { }
+        setSaving(false);
+    };
+
+    // Keyboard shortcuts
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+            if (mode === 'verify') {
+                if (e.key === 'y' || e.key === 'Y') submitVerdict(true);
+                if (e.key === 'n' || e.key === 'N') submitVerdict(false);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    });
+
+    if (!det) return <div className="empty-state">No detection selected.</div>;
+
+    return (
+        <div className="chart-grid" style={{ gridTemplateColumns: '1.5fr 1fr' }}>
+            <div className="card">
+                <div className="card-header" style={{ justifyContent: 'space-between' }}>
+                    <h3>Detection #{det.id} — {det.species || 'Unknown'}</h3>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <button className="btn btn-outline" onClick={() => onNavigate(Math.max(0, currentIdx - 1))} disabled={currentIdx <= 0}>Prev</button>
+                        <span style={{ fontSize: '0.8rem' }}>{currentIdx + 1}/{detections.length}</span>
+                        <button className="btn btn-outline" onClick={() => onNavigate(Math.min(detections.length - 1, currentIdx + 1))} disabled={currentIdx >= detections.length - 1}>Next</button>
+                    </div>
                 </div>
-                <div className="review-panel card">
-                    <h4>Focus Species</h4>
-                    <label><input type="radio" checked={focusSpecies === 'quoll'} onChange={() => setFocusSpecies('quoll')} /> Spotted-tail Quoll</label>
-                    <label><input type="radio" checked={focusSpecies === 'all'} onChange={() => setFocusSpecies('all')} /> All Species</label>
-                    <a href={getExportUrl('csv', focusSpecies === 'quoll' ? 'quoll' : undefined)} className="btn btn-outline" style={{ marginTop: '0.75rem', display: 'inline-flex' }}>Export Summary</a>
+                <div className="card-body" style={{ textAlign: 'center' }}>
+                    {det.crop_path && <img src={storageUrl(det.crop_path)} alt="crop" style={{ maxWidth: '100%', maxHeight: '50vh', borderRadius: 8 }} />}
+                    <div style={{ marginTop: '0.75rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem', justifyContent: 'center' }}>
+                        <span className="tag tag-primary">{det.species || 'Unknown'}</span>
+                        <span className={`tag ${(det.classification_confidence ?? 0) >= 0.5 ? 'tag-primary' : 'tag-accent'}`}>
+                            Cls: {det.classification_confidence != null ? (det.classification_confidence * 100).toFixed(1) + '%' : 'N/A'}
+                        </span>
+                        <span className="tag tag-muted">Det: {(det.detection_confidence * 100).toFixed(1)}%</span>
+                        {detail?.camera && <span className="tag tag-info">Cam: {detail.camera.name}</span>}
+                        {detail?.image?.captured_at && <span className="tag tag-muted">{new Date(detail.image.captured_at).toLocaleString()}</span>}
+                    </div>
+                    {lastAction && <div style={{ marginTop: '0.5rem', color: 'var(--primary)', fontWeight: 600, fontSize: '0.85rem' }}>{lastAction}</div>}
+                </div>
+            </div>
+            <div className="card">
+                <div className="card-header"><h3>{mode === 'assign-id' ? 'Assign Individual' : 'Quick Review'}</h3></div>
+                <div className="card-body">
+                    {mode === 'verify' && (
+                        <>
+                            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+                                <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => submitVerdict(true)} disabled={saving}>
+                                    Correct (Y)
+                                </button>
+                                <button className="btn btn-outline" style={{ flex: 1, borderColor: '#ef4444', color: '#ef4444' }} onClick={() => submitVerdict(false)} disabled={saving}>
+                                    Incorrect (N)
+                                </button>
+                            </div>
+                            <div style={{ marginBottom: '0.75rem' }}>
+                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Corrected species (if incorrect)</label>
+                                <select className="filter-select" style={{ width: '100%' }} value={correctedSpecies} onChange={(e) => setCorrectedSpecies(e.target.value)}>
+                                    <option value="">-- select --</option>
+                                    <option>Spotted-tailed Quoll</option>
+                                    <option>Common Brushtail Possum</option>
+                                    <option>Red Fox</option>
+                                    <option>Feral Cat</option>
+                                    <option>Common Wombat</option>
+                                    <option>Short-beaked Echidna</option>
+                                    <option>Unknown</option>
+                                    <option>Not an animal</option>
+                                </select>
+                            </div>
+                        </>
+                    )}
+                    {mode === 'assign-id' && (
+                        <>
+                            <div style={{ marginBottom: '0.75rem' }}>
+                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Individual ID (e.g. 02Q2)</label>
+                                <input className="filter-select" style={{ width: '100%' }} value={individualId} onChange={(e) => setIndividualId(e.target.value)} placeholder="Enter ID or 'new'" />
+                            </div>
+                            <button className="btn btn-primary" style={{ width: '100%' }} onClick={submitIndividualId} disabled={saving || !individualId}>
+                                {saving ? 'Saving...' : 'Assign ID'}
+                            </button>
+                        </>
+                    )}
+                    <div style={{ marginTop: '0.75rem' }}>
+                        <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Notes</label>
+                        <textarea className="filter-select" style={{ width: '100%', minHeight: 50, resize: 'vertical' }} value={notes} onChange={(e) => setNotes(e.target.value)} />
+                    </div>
+                    <div style={{ marginTop: '0.75rem' }}>
+                        <button className="btn btn-outline" style={{ fontSize: '0.8rem' }} onClick={advance}>Skip (S)</button>
+                    </div>
+                    <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                        <strong>Shortcuts:</strong> Y = correct, N = incorrect, S = skip, arrows = navigate
+                    </div>
                 </div>
             </div>
         </div>
     );
 }
 
-function ReviewCategoryCard({ title, tag, tagClass, imageCount, onReview }: { title: string; tag: string; tagClass: string; imageCount: number; onReview: () => void }) {
+function ReviewCategoryCard({ title, description, tagClass, imageCount, onReview }: { title: string; description: string; tagClass: string; imageCount: number; onReview: () => void }) {
     return (
-        <div className="review-category-card card">
-            <div className="review-category-tags">
-                <span className={`tag tag-${tagClass}`}>{tag}</span>
-                <span className={`tag tag-${tagClass}`}>{tag.split(' ')[0]}</span>
-            </div>
+        <div className="review-category-card card" style={{ cursor: 'pointer' }} onClick={onReview}>
             <div className="review-category-title">{title}</div>
-            <div className="review-category-meta">Image Count - {fmt(imageCount)}</div>
-            <div className="review-category-model">Model: YOLOV8</div>
-            <button type="button" className="btn btn-primary" onClick={onReview}>Review</button>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '0.25rem 0 0.5rem' }}>{description}</div>
+            <div className="review-category-meta"><span className={`tag tag-${tagClass}`}>{fmt(imageCount)} items</span></div>
+            <button type="button" className="btn btn-primary" style={{ marginTop: '0.75rem' }} onClick={(e) => { e.stopPropagation(); onReview(); }}>Start Review</button>
         </div>
     );
 }
@@ -668,7 +858,7 @@ function ImageBrowser() {
                                     {img.has_animal && <div style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(16,185,129,0.9)', borderRadius: '6px', padding: '2px 6px', fontSize: '0.65rem', fontWeight: 700, color: 'white' }}>ANIMAL</div>}
                                 </div>
                                 <div className="image-info">
-                                    <div className="image-filename">{img.filename}</div>
+                                    <div className="image-filename">{displayImageName(img)}</div>
                                     <div className="image-meta">
                                         {img.processed ? <span className="tag tag-primary">Processed</span> : <span className="tag tag-muted">Pending</span>}
                                         {img.camera_id && <span className="tag tag-info">Cam {img.camera_id}</span>}
@@ -1249,7 +1439,7 @@ function ImageReview() {
 
     return (
         <>
-            <div className="page-header"><h2>Review Detection #{det.id}</h2><p>{det.image?.filename} — {det.species}</p></div>
+            <div className="page-header"><h2>Review Detection #{det.id}</h2><p>{det.image ? displayImageName(det.image) : 'Unknown'} — {det.species}</p></div>
             <div className="chart-grid">
                 <div className="card">
                     <div className="card-header"><h3>Image</h3></div>
@@ -1478,7 +1668,7 @@ function ReviewImage() {
     return (
         <div>
             <nav className="breadcrumb"><Link to="/">Home</Link><span className="sep">›</span><span>Review Image</span></nav>
-            <div className="page-header"><h2>Review — {image.filename}</h2><p>Decide how to classify this image.</p></div>
+            <div className="page-header"><h2>Review — {displayImageName(image)}</h2><p>Decide how to classify this image.</p></div>
 
             <div className="review-image-layout">
                 <div className="review-image-left card">
@@ -1718,7 +1908,7 @@ function SpeciesImages() {
                                     {img.has_animal && <div className="image-animal-badge">ANIMAL</div>}
                                 </div>
                                 <div className="image-info">
-                                    <div className="image-filename">{img.filename}</div>
+                                    <div className="image-filename">{displayImageName(img)}</div>
                                     <div className="image-meta">
                                         {img.processed ? <span className="tag tag-primary">Processed</span> : <span className="tag tag-muted">Pending</span>}
                                     </div>
@@ -1733,7 +1923,7 @@ function SpeciesImages() {
                 <div className="lightbox-overlay" onClick={() => setSelected(null)}>
                     <div className="lightbox-content card" onClick={(e) => e.stopPropagation()}>
                         <div className="card-header" style={{ justifyContent: 'space-between' }}>
-                            <h3>{selected.filename}</h3>
+                            <h3>{displayImageName(selected)}</h3>
                             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                                 <label style={{ fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer' }}>
                                     <input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} /> Boxes

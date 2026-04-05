@@ -4,13 +4,14 @@ import io
 import json
 from datetime import datetime
 
-from sqlalchemy import select, func, extract
+from sqlalchemy import select, func, extract, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.image import Image
 from backend.app.models.detection import Detection
 from backend.app.models.annotation import Annotation
 from backend.app.models.camera import Camera
+from backend.app.models.deployment import Deployment
 from backend.app.models.job import ProcessingJob
 
 
@@ -89,6 +90,35 @@ async def generate_summary_report(
     hourly_rows = (await db.execute(hourly_q)).all()
     hourly_activity = [{"hour": int(r[0]), "detections": r[1]} for r in hourly_rows]
 
+    # RAI: Relative Abundance Index = (independent events / trap-nights) * 100
+    total_trap_nights_val = (await db.execute(
+        select(func.sum(Deployment.trap_nights))
+    )).scalar() or 0.0
+
+    rai_data: list[dict] = []
+    if total_trap_nights_val > 0:
+        # Count independent events per species using event_id
+        event_species_q = (
+            select(
+                Detection.species,
+                func.count(distinct(Image.event_id)).label("events"),
+            )
+            .join(Image, Image.id == Detection.image_id)
+            .where(Detection.species.isnot(None), Image.event_id.isnot(None))
+            .group_by(Detection.species)
+            .order_by(func.count(distinct(Image.event_id)).desc())
+        )
+        event_rows = (await db.execute(event_species_q)).all()
+        for row in event_rows:
+            sp_name, events = row
+            rai_val = round((events / total_trap_nights_val) * 100, 4)
+            rai_data.append({
+                "species": sp_name,
+                "independent_events": events,
+                "total_trap_nights": round(total_trap_nights_val, 2),
+                "rai": rai_val,
+            })
+
     return {
         "total_images": total_images,
         "processed_images": processed_images,
@@ -101,6 +131,8 @@ async def generate_summary_report(
         "species_distribution": species_distribution,
         "camera_counts": camera_counts,
         "hourly_activity": hourly_activity,
+        "rai_data": rai_data,
+        "total_trap_nights": round(total_trap_nights_val, 2),
     }
 
 
@@ -149,6 +181,15 @@ def export_report_csv(report: dict) -> str:
     writer.writerow(["Hour", "Detections"])
     for hr in report.get("hourly_activity", []):
         writer.writerow([hr["hour"], hr["detections"]])
+
+    if report.get("rai_data"):
+        writer.writerow([])
+        writer.writerow(["Species", "Independent Events", "Trap-Nights", "RAI"])
+        for entry in report["rai_data"]:
+            writer.writerow([
+                entry["species"], entry["independent_events"],
+                entry["total_trap_nights"], entry["rai"],
+            ])
 
     return buf.getvalue()
 

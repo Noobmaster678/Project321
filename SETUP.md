@@ -66,47 +66,54 @@ VRAM: 10.0 GB
 pip install megadetector
 ```
 
-### Download MegaDetector v5a weights:
+### Download MegaDetector v5a weights (required by current code path):
 
-```bash
-# Create model directory
-mkdir -p ml_models/megadetector
+```powershell
+# Create model directory at the exact location expected by backend/app/config.py
+New-Item -ItemType Directory -Force -Path "C:\Users\Admin\ml_models\megadetector" | Out-Null
 
 # Download MDv5a weights (~180 MB)
-curl -L -o ml_models/megadetector/md_v5a.0.0.pt https://github.com/agentmorris/MegaDetector/releases/download/v5.0/md_v5a.0.0.pt
+curl.exe -L "https://huggingface.co/agentmorris/megadetector/resolve/main/md_v5a.0.0.pt" -o "C:\Users\Admin\ml_models\megadetector\md_v5a.0.0.pt"
 ```
 
-> If `curl` doesn't work on Windows, download manually from:  
-> https://github.com/agentmorris/MegaDetector/releases/download/v5.0/md_v5a.0.0.pt  
-> and place in `ml_models/megadetector/`
+Official sources:
+- https://github.com/microsoft/CameraTraps/releases/tag/v5.0
+- https://huggingface.co/agentmorris/megadetector
 
 ### Verify MegaDetector:
 ```bash
-python -c "from megadetector.detection.run_detector import load_detector; m = load_detector('ml_models/megadetector/md_v5a.0.0.pt'); print('MegaDetector loaded OK')"
+python -c "from megadetector.detection.run_detector import load_detector; m = load_detector(r'C:/Users/Admin/ml_models/megadetector/md_v5a.0.0.pt'); print('MegaDetector loaded OK')"
 ```
 
 ---
 
 ## Step 4: Install AWC135 Classifier
 
-```bash
+```powershell
 # Clone AWC Wildlife Classifier repository
-git clone https://github.com/Australian-Wildlife-Conservancy-AWC/awc-wildlife-classifier.git ml_models/awc135_repo
+git clone https://github.com/Australian-Wildlife-Conservancy-AWC/awc-wildlife-classifier.git "C:\Users\Admin\ml_models\awc135_repo"
 
 # Install awc_helpers package
-pip install -e ml_models/awc135_repo
+pip install -e "C:\Users\Admin\ml_models\awc135_repo"
 ```
 
 ### Download AWC135 model weights:
 
-Follow the instructions in the AWC repo README to download:
-1. **AWC135 classifier weights** (`.pth` file) → save to `ml_models/awc135/awc135_weights.pth`
-2. **Labels file** → save to `ml_models/awc135/labels.txt`
+AWC source links:
+- https://github.com/Australian-Wildlife-Conservancy-AWC/awc-wildlife-classifier
+- https://www.australianwildlife.org/australian-wildlife-classifier-awc135
 
-```bash
-mkdir -p ml_models/awc135
-# Move downloaded files to ml_models/awc135/
+Create the model folder and place files at the **exact** names/paths used by `backend/app/config.py`:
+
+```powershell
+New-Item -ItemType Directory -Force -Path "C:\Users\Admin\ml_models\awc135" | Out-Null
 ```
+
+Required files:
+1. `C:\Users\Admin\ml_models\awc135\awc-135-v1.pth`
+2. `C:\Users\Admin\ml_models\awc135\labels.txt`
+
+If weights are not publicly downloadable in your environment, request the exact files from the submitter/supervisor and place them in the folder above.
 
 ---
 
@@ -166,22 +173,48 @@ print('🎉 All dependencies installed successfully!')
 "
 ```
 
+### Pre-flight checks for this prototype (must pass)
+
+```powershell
+python -c "from pathlib import Path; files=[r'C:/Users/Admin/ml_models/megadetector/md_v5a.0.0.pt', r'C:/Users/Admin/ml_models/awc135/awc-135-v1.pth', r'C:/Users/Admin/ml_models/awc135/labels.txt']; print({f: Path(f).exists() for f in files})"
+python -c "import megadetector; print('megadetector import OK')"
+python -c "import awc_helpers; print('awc_helpers import OK')"
+```
+
 ---
 
-## Step 8: Frontend Setup (Later)
+## Step 8: Run Prototype for Teacher Testing
+
+### 8.1 Start backend API (Terminal 1)
 
 ```bash
-# Navigate to frontend directory
+conda activate wildlife
+python -m backend.app.db.init_db
+uvicorn backend.app.main:app --reload
+```
+
+API endpoints:
+- http://localhost:8000/docs
+- http://localhost:8000/health
+
+### 8.2 Start frontend (Terminal 2)
+
+```bash
 cd frontend
-
-# Install Node.js dependencies
 npm install
-
-# Start development server
 npm run dev
 ```
 
 Frontend will be available at `http://localhost:5173`
+
+### 8.3 Optional: run standalone ML batch processing
+
+```bash
+conda activate wildlife
+python -m scripts.run_pipeline --limit 100 --batch-size 8
+```
+
+Expected behavior: console prints model load messages, processing progress, and final summary.
 
 ---
 
@@ -191,8 +224,8 @@ Frontend will be available at `http://localhost:5173`
 |---------|---------|
 | `conda activate wildlife` | Activate environment |
 | `uvicorn backend.app.main:app --reload` | Start backend API |
-| `python scripts/bulk_import.py` | Import dataset into DB |
-| `python scripts/run_pipeline.py` | Run ML detection pipeline |
+| `python -m backend.app.db.init_db` | Create DB tables |
+| `python -m scripts.run_pipeline --limit 100 --batch-size 8` | Run ML detection pipeline |
 | `cd frontend && npm run dev` | Start frontend |
 
 ---
@@ -204,5 +237,5 @@ Frontend will be available at `http://localhost:5173`
 | `CUDA not available` | Update NVIDIA driver to ≥ 522.06, reinstall PyTorch |
 | `Out of memory` | Reduce `BATCH_SIZE` in `backend/app/config.py` (default 8 → try 4) |
 | `ImportError: megadetector` | Run `pip install megadetector` in the wildlife conda env |
-| `ModuleNotFoundError: awc_helpers` | Re-run `pip install -e ml_models/awc135_repo` |
+| `ModuleNotFoundError: awc_helpers` | Re-run `pip install -e "C:\Users\Admin\ml_models\awc135_repo"` |
 | `Database locked` error | Only one process should write to SQLite at a time |

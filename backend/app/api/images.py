@@ -16,6 +16,7 @@ from backend.app.models.detection import Detection
 from backend.app.models.missed_correction import MissedDetectionCorrection
 from backend.app.models.camera import Camera
 from backend.app.models.collection import Collection
+from backend.app.models.deployment import Deployment
 from backend.app.models.job import ProcessingJob
 from backend.app.models.user import User
 from backend.app.schemas.schemas import (
@@ -325,6 +326,31 @@ async def _get_or_create_collection(db: AsyncSession, name: str, cache: dict[str
     return col.id
 
 
+async def _ensure_deployment(
+    db: AsyncSession,
+    camera_id: int,
+    collection_id: int | None,
+    cache: dict[tuple[int, int | None], int],
+) -> int:
+    """Find or create a Deployment for a camera+collection pair."""
+    key = (camera_id, collection_id)
+    if key in cache:
+        return cache[key]
+    q = select(Deployment).where(
+        Deployment.camera_id == camera_id,
+        Deployment.collection_id == collection_id if collection_id else Deployment.collection_id.is_(None),
+    )
+    row = (await db.execute(q)).scalar_one_or_none()
+    if row:
+        cache[key] = row.id
+        return row.id
+    dep = Deployment(camera_id=camera_id, collection_id=collection_id)
+    db.add(dep)
+    await db.flush()
+    cache[key] = dep.id
+    return dep.id
+
+
 @router.post("/upload-batch", response_model=BatchUploadResponse)
 async def upload_batch(
     files: list[UploadFile] = File(...),
@@ -350,6 +376,7 @@ async def upload_batch(
 
     camera_cache: dict[str, int] = {}
     collection_cache: dict[str, int] = {}
+    deployment_cache: dict[tuple[int, int | None], int] = {}
 
     image_ids = []
     reserved_rel_paths: set[str] = set()
@@ -373,6 +400,9 @@ async def upload_batch(
                 file_collection_id = await _get_or_create_collection(db, col_name, collection_cache)
             if cam_name and file_camera_id is None:
                 file_camera_id = await _get_or_create_camera(db, cam_name, camera_cache)
+
+        if file_camera_id is not None:
+            await _ensure_deployment(db, file_camera_id, file_collection_id, deployment_cache)
 
         dest, rel_path, saved_name = await _reserve_unique_upload_path(db, use_path, reserved_rel_paths)
         dest.parent.mkdir(parents=True, exist_ok=True)

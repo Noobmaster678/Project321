@@ -1,5 +1,5 @@
 """Pydantic schemas for API request/response models."""
-from datetime import datetime
+from datetime import datetime, date
 from pydantic import BaseModel, Field
 from typing import Optional, Any
 
@@ -80,6 +80,7 @@ class DetectionOut(DetectionBase):
     id: int
     model_version: Optional[str] = None
     crop_path: Optional[str] = None
+    review_status: Optional[str] = "unreviewed"
     created_at: Optional[datetime] = None
     model_config = {"from_attributes": True}
 
@@ -140,6 +141,9 @@ class ImageOut(ImageBase):
     processed: bool = False
     has_animal: Optional[bool] = None
     thumbnail_path: Optional[str] = None
+    event_id: Optional[int] = None
+    temperature_c: Optional[float] = None
+    trigger_mode: Optional[str] = None
     model_config = {"from_attributes": True}
 
 
@@ -229,6 +233,8 @@ class ReportOut(BaseModel):
     species_distribution: list[dict] = []
     camera_counts: list[dict] = []
     hourly_activity: list[dict] = []
+    rai_data: list[dict] = []
+    total_trap_nights: float = 0.0
 
 
 class ExportRequest(BaseModel):
@@ -255,6 +261,81 @@ class DashboardStats(BaseModel):
     total_collections: int = 0
     processing_percent: float = 0.0
     pending_review: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
+class DeploymentCreate(BaseModel):
+    camera_id: int
+    collection_id: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    elevation: Optional[float] = None
+    setup_notes: Optional[str] = None
+    bait_used: bool = False
+
+
+class DeploymentOut(BaseModel):
+    id: int
+    camera_id: int
+    collection_id: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    elevation: Optional[float] = None
+    setup_notes: Optional[str] = None
+    bait_used: bool = False
+    trap_nights: Optional[float] = None
+    created_at: Optional[datetime] = None
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Model Version
+# ---------------------------------------------------------------------------
+class ModelVersionCreate(BaseModel):
+    name: str
+    model_type: str = "awc135"
+    model_path: Optional[str] = None
+    base_model: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ModelVersionOut(BaseModel):
+    id: int
+    name: str
+    model_type: str
+    model_path: Optional[str] = None
+    base_model: Optional[str] = None
+    training_samples: int = 0
+    corrections_included: int = 0
+    validation_accuracy: Optional[float] = None
+    is_active: bool = False
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# RAI Report
+# ---------------------------------------------------------------------------
+class RAIEntry(BaseModel):
+    species: str
+    independent_events: int = 0
+    total_trap_nights: float = 0.0
+    rai: float = 0.0
+
+
+class RAIReport(BaseModel):
+    total_trap_nights: float = 0.0
+    total_deployments: int = 0
+    total_cameras: int = 0
+    entries: list[RAIEntry] = []
+    camera_occupancy: list[dict] = []
 
 
 # ---------------------------------------------------------------------------

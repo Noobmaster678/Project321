@@ -30,8 +30,10 @@ class Detection(Base):
     model_version = Column(String, nullable=True)  # e.g. "MDv5a+AWC135"
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    # Crop file path
     crop_path = Column(String, nullable=True)
+
+    # Review status: unreviewed, verified, corrected, flagged
+    review_status = Column(String, nullable=True, default="unreviewed", index=True)
 
     # Relationships
     image = relationship("Image", back_populates="detections")
