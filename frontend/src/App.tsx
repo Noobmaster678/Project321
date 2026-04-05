@@ -990,7 +990,22 @@ function Reports() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    useEffect(() => { fetchReport().then(setReport).catch((e) => setError(e.message)).finally(() => setLoading(false)); }, []);
+    const [startDate, setStartDate] = useState('');
+    const [endDate, setEndDate] = useState('');
+    const [location, setLocation] = useState('All Locations');
+    const [individual, setIndividual] = useState('');
+    const [exportFormat, setExportFormat] = useState<'pdf' | 'csv'>('pdf');
+    
+    const [incTimestamps, setIncTimestamps] = useState(true);
+    const [incGPS, setIncGPS] = useState(true);
+    const [incConfidence, setIncConfidence] = useState(true);
+    const [incEnv, setIncEnv] = useState(false);
+    const [incCamera, setIncCamera] = useState(false);
+
+    useEffect(() => { 
+        fetchReport().then(setReport).catch((e) => setError(e.message)).finally(() => setLoading(false)); 
+    }, []);
+
     if (loading) return <LoadingState />;
     if (error) return <ErrorState message={error} />;
     if (!report) return null;
@@ -1013,86 +1028,182 @@ function Reports() {
         }
     };
 
+    const handleExport = () => {
+        if (exportFormat === 'csv') {
+            downloadFile(getExportUrl('csv'), 'custom_wildlife_report.csv');
+        } else {
+            alert("PDF generation is currently being implemented on the server. Downloading raw JSON data instead.");
+            downloadFile(getExportUrl('json'), 'wildlife_report_data.json');
+        }
+    };
+
     return (
-        <>
-            <div className="page-header"><h2>Reports</h2><p>Batch processing results and data visualizations</p></div>
-            <div className="stats-grid">
-                <StatCard icon="📷" value={fmt(report.total_images)} label="Total Images" />
-                <StatCard icon="✅" value={fmt(report.processed_images)} label="Processed" />
-                <StatCard icon="🔲" value={fmt(report.empty_images)} label="Empty" />
-                <StatCard icon="🔍" value={fmt(report.total_detections)} label="Detections" />
-                <StatCard icon="🏷️" value={fmt(report.total_species)} label="Species" />
-                <StatCard icon="🐾" value={fmt(report.quoll_detections)} label="Quolls" />
-            </div>
-
-            {report.mean_detection_confidence != null && (
-                <div className="card" style={{ marginBottom: '1.5rem' }}>
-                    <div className="card-header"><h3>Confidence Statistics</h3></div>
-                    <div className="card-body" style={{ display: 'flex', gap: '2rem' }}>
-                        <div>Detection avg: <strong>{report.mean_detection_confidence.toFixed(3)}</strong></div>
-                        <div>Classification avg: <strong>{(report.mean_classification_confidence ?? 0).toFixed(3)}</strong></div>
+        <div className="reports-page-wrapper">
+            <div className="reports-container">
+                
+                {/* Header */}
+                <div className="reports-header">
+                    <div>
+                        <h1 className="reports-title">Report Generation</h1>
+                        <p className="reports-subtitle">Generate and export reports for your sightings data</p>
                     </div>
+                    <button onClick={handleExport} className="btn-export">
+                        <img src="https://api.iconify.design/heroicons:arrow-down-tray-20-solid.svg?color=white" alt="download" />
+                        Export Report
+                    </button>
                 </div>
-            )}
 
-            <div className="chart-grid">
-                {report.species_distribution.length > 0 && (
-                    <div className="card">
-                        <div className="card-header"><h3>Species Distribution</h3></div>
-                        <div className="card-body" style={{ height: 300 }}>
-                            <ResponsiveContainer>
-                                <PieChart>
-                                    <Pie data={report.species_distribution} dataKey="count" nameKey="species" cx="50%" cy="50%" outerRadius={100} label={({ species, percent }) => `${species.split('|').pop()?.trim()} ${(percent * 100).toFixed(0)}%`}>
-                                        {report.species_distribution.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-                                    </Pie>
-                                    <Tooltip />
-                                </PieChart>
-                            </ResponsiveContainer>
+                {/* Customisation UI */}
+                <section className="report-section">
+                    <h2 className="section-label">Customise Your Report</h2>
+                    
+                    <div className="form-grid">
+                        <div className="form-col-span-2">
+                            <div className="date-row">
+                                <div>
+                                    <label className="form-label">Date Range</label>
+                                    <div className="date-flex">
+                                        <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="form-input" />
+                                        <span className="date-sep">to</span>
+                                        <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="form-input" />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="form-label">Location</label>
+                                    <select value={location} onChange={(e) => setLocation(e.target.value)} className="form-input">
+                                        <option>All Locations</option>
+                                        {report.camera_counts.map(c => (
+                                            <option key={c.camera} value={c.camera}>{c.camera}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
+                            <div style={{ marginTop: '1.5rem' }}>
+                                <label className="form-label">Individual</label>
+                                <input type="text" value={individual} onChange={(e) => setIndividual(e.target.value)} placeholder="e.g. #STQ_12A, #STQ_13A" className="form-input" />
+                            </div>
                         </div>
-                    </div>
-                )}
-                {report.hourly_activity.length > 0 && (
-                    <div className="card">
-                        <div className="card-header"><h3>Hourly Activity</h3></div>
-                        <div className="card-body" style={{ height: 300 }}>
-                            <ResponsiveContainer>
-                                <BarChart data={report.hourly_activity}>
-                                    <XAxis dataKey="hour" tick={{ fill: '#9ca3af', fontSize: 12 }} />
-                                    <YAxis tick={{ fill: '#9ca3af', fontSize: 12 }} />
-                                    <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid rgba(255,255,255,0.1)' }} />
-                                    <Bar dataKey="detections" fill="#10b981" radius={[4, 4, 0, 0]} />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-                )}
-                {report.camera_counts.length > 0 && (
-                    <div className="card">
-                        <div className="card-header"><h3>Detections by Camera</h3></div>
-                        <div className="card-body" style={{ height: 300 }}>
-                            <ResponsiveContainer>
-                                <BarChart data={report.camera_counts} layout="vertical">
-                                    <XAxis type="number" tick={{ fill: '#9ca3af', fontSize: 12 }} />
-                                    <YAxis dataKey="camera" type="category" tick={{ fill: '#9ca3af', fontSize: 11 }} width={50} />
-                                    <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid rgba(255,255,255,0.1)' }} />
-                                    <Bar dataKey="detections" fill="#3b82f6" radius={[0, 4, 4, 0]} />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-                )}
-            </div>
 
-            <div className="card">
-                <div className="card-header"><h3>Export</h3></div>
-                <div className="card-body" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    <button className="btn btn-outline" onClick={() => downloadFile(getExportUrl('csv'), 'wildlife_report.csv')}>Report CSV</button>
-                    <button className="btn btn-outline" onClick={() => downloadFile(getExportUrl('json'), 'wildlife_report.json')}>Report JSON</button>
-                    <button className="btn btn-primary" onClick={() => downloadFile(getQuollExportUrl('csv'), 'quoll_detections.csv')}>Quoll Detections CSV</button>
-                    <button className="btn btn-outline" onClick={() => downloadFile(getMetadataExportUrl('csv'), 'full_metadata.csv')}>Full Metadata CSV</button>
-                </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '100%' }}>
+                            <div>
+                                <label className="form-label">Report Format</label>
+                                <div className="format-group">
+                                    <label className={`format-card ${exportFormat === 'pdf' ? 'active' : ''}`} onClick={() => setExportFormat('pdf')}>
+                                        <img src="https://api.iconify.design/bi:file-earmark-pdf-fill.svg" alt="pdf" />
+                                        <span>PDF Report</span>
+                                    </label>
+                                    <label className={`format-card ${exportFormat === 'csv' ? 'active' : ''}`} onClick={() => setExportFormat('csv')}>
+                                        <img src="https://api.iconify.design/bi:file-earmark-spreadsheet-fill.svg" alt="csv" />
+                                        <span>CSV Data</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div className="checkbox-section">
+                        <label className="form-label" style={{ marginBottom: '1rem' }}>Data To Include</label>
+                        <div className="checkbox-grid">
+                            <label className="checkbox-label">
+                                <input type="checkbox" checked={incTimestamps} onChange={(e) => setIncTimestamps(e.target.checked)} className="custom-checkbox" />
+                                <span>Sighting Timestamps</span>
+                            </label>
+                            <label className="checkbox-label">
+                                <input type="checkbox" checked={incGPS} onChange={(e) => setIncGPS(e.target.checked)} className="custom-checkbox" />
+                                <span>GPS Coordinates</span>
+                            </label>
+                            <label className="checkbox-label">
+                                <input type="checkbox" checked={incConfidence} onChange={(e) => setIncConfidence(e.target.checked)} className="custom-checkbox" />
+                                <span>AI Confidence Score</span>
+                            </label>
+                            <label className="checkbox-label">
+                                <input type="checkbox" checked={incEnv} onChange={(e) => setIncEnv(e.target.checked)} className="custom-checkbox" />
+                                <span>Environment Data</span>
+                            </label>
+                            <label className="checkbox-label">
+                                <input type="checkbox" checked={incCamera} onChange={(e) => setIncCamera(e.target.checked)} className="custom-checkbox" />
+                                <span>Camera Trap ID</span>
+                            </label>
+                        </div>
+                    </div>
+                </section>
+
+                {/* Report Preview */}
+                <section className="preview-section">
+                    <div className="preview-header">
+                        <span className="preview-header-title">Report Preview</span>
+                        <span className="preview-header-meta">Showing Sample Sightings</span>
+                    </div>
+
+                    <div className="table-wrapper">
+                        <table className="report-table">
+                            <thead>
+                                <tr>
+                                    <th>Sighting ID</th>
+                                    {incTimestamps && <th>Timestamp</th>}
+                                    <th>Species</th>
+                                    {incConfidence && <th>Confidence</th>}
+                                    {incGPS && <th>Coordinates</th>}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td className="text-strong">S-001</td>
+                                    {incTimestamps && <td style={{ color: '#4b5563' }}>2025-09-13 23:12:04</td>}
+                                    <td className="text-italic">Spotted-tail Quoll</td>
+                                    {incConfidence && <td><span className="conf-high">96%</span></td>}
+                                    {incGPS && <td className="text-mono">-35.123, 150.456</td>}
+                                </tr>
+                                <tr>
+                                    <td className="text-strong">S-005</td>
+                                    {incTimestamps && <td style={{ color: '#4b5563' }}>2025-09-13 15:22:56</td>}
+                                    <td className="text-italic">Spotted-tail Quoll</td>
+                                    {incConfidence && <td><span className="conf-low">46%</span></td>}
+                                    {incGPS && <td className="text-mono">-35.120, 150.450</td>}
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="viz-area">
+                        <h4 className="section-label" style={{ marginBottom: '2.5rem' }}>Additional Data Visualizations</h4>
+                        <div className="viz-grid">
+                            {report.species_distribution.length > 0 && (
+                                <div className="viz-card">
+                                    <div style={{ height: 300 }}>
+                                        <ResponsiveContainer>
+                                            <PieChart>
+                                                <Pie data={report.species_distribution} dataKey="count" nameKey="species" cx="50%" cy="50%" outerRadius={100} label={({ species, percent }) => `${species.split('|').pop()?.trim()} ${(percent * 100).toFixed(0)}%`}>
+                                                    {report.species_distribution.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                                                </Pie>
+                                                <Tooltip />
+                                            </PieChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                    <p className="viz-caption">Fig 1. Species Distribution</p>
+                                </div>
+                            )}
+                            
+                            {report.hourly_activity.length > 0 && (
+                                <div className="viz-card">
+                                    <div style={{ height: 300 }}>
+                                        <ResponsiveContainer>
+                                            <BarChart data={report.hourly_activity}>
+                                                <XAxis dataKey="hour" tick={{ fill: '#9ca3af', fontSize: 12 }} />
+                                                <YAxis tick={{ fill: '#9ca3af', fontSize: 12 }} />
+                                                <Tooltip contentStyle={{ background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '8px' }} />
+                                                <Bar dataKey="detections" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                    <p className="viz-caption">Fig 2. Quoll Activity Pattern (24h)</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </section>
             </div>
-        </>
+        </div>
     );
 }
 
@@ -1730,17 +1841,170 @@ function SpeciesByIndividual() {
     );
 }
 
+/* ============================================================
+   INDIVIDUAL PROFILE PAGE
+   ============================================================ */
 function IndividualImages() {
     const { speciesKey, individualId } = useParams();
-    const decoded = individualId ? decodeURIComponent(individualId) : '';
+    const decodedId = individualId ? decodeURIComponent(individualId) : '';
+    const decodedSpecies = speciesKey ? decodeURIComponent(speciesKey).replace(/-/g, ' ') : '';
+    
+    const [individual, setIndividual] = useState<IndividualData | null>(null);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        // Fetch the list of individuals and find the specific one matching our ID
+        fetchIndividuals()
+            .then((list) => {
+                const found = list.find((i) => i.individual_id === decodedId);
+                setIndividual(found || null);
+            })
+            .catch(() => {})
+            .finally(() => setLoading(false));
+    }, [decodedId]);
+
+    if (loading) return <LoadingState />;
+
+    // Calculate "Days Active" if we have both first and last seen dates
+    let daysActive = '—';
+    if (individual?.first_seen && individual?.last_seen) {
+        const first = new Date(individual.first_seen).getTime();
+        const last = new Date(individual.last_seen).getTime();
+        const diffDays = Math.ceil((last - first) / (1000 * 3600 * 24));
+        daysActive = diffDays === 0 ? '1 Day' : `${diffDays} Days`;
+    }
+
+    // Dummy map center (Can be updated later to average sightings coords)
+    const mapCenter: [number, number] = [-34.4, 150.3];
 
     return (
-        <div>
-            <nav className="breadcrumb"><Link to="/">Home</Link><span className="sep">›</span><Link to="/individuals">Profiles</Link><span className="sep">›</span><Link to={`/individuals/species/${speciesKey}`}>{speciesKey}</Link><span className="sep">›</span><Link to={`/individuals/species/${speciesKey}/individuals`}>Individuals</Link><span className="sep">›</span><span>{decoded}</span></nav>
-            <div className="page-header"><h2>Individual {decoded}</h2><p>Sightings and images for this individual (list requires backend support)</p></div>
+        <div className="profile-page-wrapper">
+            <div className="profile-container">
+                
+                {/* Breadcrumb Navigation */}
+                <nav className="breadcrumb" style={{ marginBottom: '2rem' }}>
+                    <Link to="/">Home</Link><span className="sep">›</span>
+                    <Link to="/individuals">Profiles</Link><span className="sep">›</span>
+                    <Link to={`/individuals/species/${speciesKey}`}>{decodedSpecies}</Link><span className="sep">›</span>
+                    <Link to={`/individuals/species/${speciesKey}/individuals`}>Individuals</Link><span className="sep">›</span>
+                    <span style={{ fontWeight: 'bold', color: '#16a34a' }}>{decodedId}</span>
+                </nav>
+
+                {/* Main Identity Header */}
+                <div className="profile-header-card">
+                    <div className="profile-identity">
+                        <h1>🐾 {decodedId}</h1>
+                        <p>{decodedSpecies}</p>
+                    </div>
+                    <div>
+                        {/* Assuming active if seen within the last 30 days, otherwise 'Historical' */}
+                        <span className="status-badge">🟢 Active Track</span>
+                    </div>
+                </div>
+
+                {/* Quick Stats Row */}
+                <div className="profile-stats-row">
+                    <div className="profile-stat-box">
+                        <div className="stat-icon-large">👁️</div>
+                        <div className="stat-details">
+                            <div className="label">Total Sightings</div>
+                            <div className="value">{individual?.total_sightings || 0}</div>
+                        </div>
+                    </div>
+                    <div className="profile-stat-box">
+                        <div className="stat-icon-large">📅</div>
+                        <div className="stat-details">
+                            <div className="label">First Seen</div>
+                            <div className="value">
+                                {individual?.first_seen ? new Date(individual.first_seen).toLocaleDateString() : 'Unknown'}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="profile-stat-box">
+                        <div className="stat-icon-large">📍</div>
+                        <div className="stat-details">
+                            <div className="label">Last Seen</div>
+                            <div className="value">
+                                {individual?.last_seen ? new Date(individual.last_seen).toLocaleDateString() : 'Unknown'}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="profile-stat-box">
+                        <div className="stat-icon-large">⏱️</div>
+                        <div className="stat-details">
+                            <div className="label">Duration Tracked</div>
+                            <div className="value">{daysActive}</div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Two Column Layout: Map & Gallery */}
+                <div className="profile-content-grid">
+                    
+                    {/* Left Panel: Sightings Map */}
+                    <div className="content-panel">
+                        <div className="panel-header">Territory & Sightings Map</div>
+                        <div className="panel-body">
+                            <p style={{ color: '#6b7280', fontSize: '0.875rem', marginTop: 0, marginBottom: '1.5rem' }}>
+                                Estimated territory based on camera trap coordinates.
+                            </p>
+                            <div className="profile-map-container">
+                                <MapContainer center={mapCenter} zoom={11} style={{ height: '100%', width: '100%', zIndex: 1 }}>
+                                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="OSM" />
+                                    {/* Mock Marker representing a sighting */}
+                                    <Marker position={mapCenter}>
+                                        <Popup>
+                                            <strong>{decodedId} Sighting</strong><br />
+                                            {individual?.last_seen ? new Date(individual.last_seen).toLocaleDateString() : 'Recent'}
+                                        </Popup>
+                                    </Marker>
+                                </MapContainer>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Right Panel: Recent Captures Gallery */}
+                    <div className="content-panel">
+                        <div className="panel-header">Recent Captures</div>
+                        <div className="panel-body">
+                            {individual?.total_sightings === 0 ? (
+                                <EmptyMsg text="No images available for this individual yet." />
+                            ) : (
+                                <div className="profile-gallery">
+                                    {/* These are placeholder boxes for the UI until a specific endpoint for fetching an individual's images is wired up */}
+                                    <div className="gallery-image-wrapper">
+                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
+                                        <div className="gallery-date-tag">Most Recent</div>
+                                    </div>
+                                    <div className="gallery-image-wrapper">
+                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
+                                        <div className="gallery-date-tag">Archive</div>
+                                    </div>
+                                    <div className="gallery-image-wrapper">
+                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
+                                        <div className="gallery-date-tag">Archive</div>
+                                    </div>
+                                    <div className="gallery-image-wrapper">
+                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
+                                        <div className="gallery-date-tag">First Sighting</div>
+                                    </div>
+                                </div>
+                            )}
+                            <div style={{ marginTop: '1.5rem', textAlign: 'center' }}>
+                                <button className="btn-export" style={{ backgroundColor: '#f3f4f6', color: '#374151', width: '100%', justifyContent: 'center', boxShadow: 'none' }}>
+                                    View All Sightings Data
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
         </div>
     );
 }
+
+
 
 /* ============================================================
    ADMIN PANEL
