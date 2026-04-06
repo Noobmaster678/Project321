@@ -394,6 +394,12 @@ export async function fetchSystemMetrics() {
     return res.json();
 }
 
+export async function fetchAdminDashboardStats(): Promise<any> {
+    const res = await apiFetch(`${API_BASE}/admin/dashboard-stats`);
+    if (!res.ok) throw new Error('Failed to fetch admin dashboard stats');
+    return res.json();
+}
+
 // ---- Helpers --------------------------------------------------------------
 
 export function storageUrl(path: string): string {
