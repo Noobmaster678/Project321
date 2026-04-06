@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, useParams, Navigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, CartesianGrid } from 'recharts';
 import L from 'leaflet';
 import { AuthProvider, useAuth } from './auth';
 import {
@@ -59,7 +59,10 @@ function AppShell() {
                     <Route path="/review/:detectionId" element={<RequireAuth><ImageReview /></RequireAuth>} />
                     <Route path="/review-empty/:imageId" element={<RequireAuth><ReviewEmptyImage /></RequireAuth>} />
                     <Route path="/review-image/:imageId" element={<RequireAuth><ReviewImage /></RequireAuth>} />
-                    <Route path="/admin" element={<RequireAuth role="admin"><AdminPanel /></RequireAuth>} />
+                    
+                    {/* NEW ADMIN ROUTE ADDED HERE */}
+                    <Route path="/admin" element={<RequireAuth role="admin"><AdminDashboard /></RequireAuth>} />
+                    
                     <Route path="/login" element={<LoginPage />} />
                     <Route path="*" element={<Navigate to="/" />} />
                 </Routes>
@@ -77,7 +80,7 @@ function RequireAuth({ children, role }: { children: React.ReactNode; role?: str
 }
 
 /* ============================================================
-   HEADER (WildlifeTracker approved design)
+    HEADER 
    ============================================================ */
 function HomeHeader() {
     const loc = useLocation();
@@ -89,6 +92,7 @@ function HomeHeader() {
         { path: '/pending-review', label: 'Pending Review' },
         { path: '/reports', label: 'Reports' },
         { path: '/help', label: 'Help' },
+        { path: '/admin', label: 'Admin' }, // Added Admin to Nav
     ];
 
     return (
@@ -131,15 +135,174 @@ function HomeHeader() {
 
 function LeafLogo() {
     return (
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden style={{width: 24, height: 24, marginRight: 8}}>
             <path d="M17 8C8 10 5.9 16.17 3.82 21.34L5.71 22L6.66 19.7C7.14 18.66 7.5 17.59 7.77 16.5C8.5 18 9.5 19.5 10.5 20.5C11.5 21.5 13 22 15 22C19 22 22 19 22 15C22 12 20.5 9.5 18 8C17 8 17 8 17 8Z" />
         </svg>
     );
 }
 
 /* ============================================================
-   FOOTER (WildlifeTracker approved design)
+    ADMIN DASHBOARD COMPONENT 
    ============================================================ */
+function AdminDashboard() {
+    const [data, setData] = useState<any>(null);
+    const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        fetch('http://localhost:8000/api/admin/dashboard-stats')
+            .then(res => {
+                if (!res.ok) throw new Error("Could not connect to backend");
+                return res.json();
+            })
+            .then(setData)
+            .catch(err => setError(err.message));
+    }, []);
+
+    if (error) return <ErrorState message={error} />;
+    if (!data) return <LoadingState />;
+
+    const accuracyData = [
+        { month: 'Jan', acc: 5 }, { month: '2y', acc: 60 }, 
+        { month: '5', acc: 45 }, { month: '30', acc: 65 }, 
+        { month: 'Der', acc: 80 }, { month: '100', acc: 88 }
+    ];
+
+    const pieData = [
+        { name: 'Positive', value: 72 }, { name: 'Unverified', value: 28 }
+    ];
+
+    const userActivity = [
+        { name: 'Normal User', value: 30 }, 
+        { name: 'Camera Traps', value: 20 }, 
+        { name: 'UOW Ecologist', value: 40 },
+        { name: 'Other', value: 10 }
+    ];
+
+    return (
+        <div className="admin-dashboard-page">
+            <style>{adminStyles}</style>
+            <div className="search-container">
+                <input type="text" className="search-bar" placeholder="Search sightings, IDs, or locations..." />
+            </div>
+
+            <section className="admin-section">
+                <h3 className="section-title">Activity</h3>
+                <div className="activity-stats-grid">
+                    {data.stats.map((s: any, i: number) => (
+                        <div key={i} className={`admin-stat-card border-${s.color}`}>
+                            <div className={`status-dot dot-${s.color}`}></div>
+                            <h2 className="admin-stat-value">{s.value}</h2>
+                            <p className="admin-stat-label">{s.label}</p>
+                        </div>
+                    ))}
+                </div>
+            </section>
+
+            <section className="admin-section">
+                <h3 className="section-title">Recent Sighting</h3>
+                <div className="recent-sightings-grid">
+                    {data.recent_sightings.map((s: any) => (
+                        <div key={s.id} className="admin-quoll-card">
+                            <div className="admin-img-wrap">
+                                <img src={s.img} alt="Quoll" />
+                                <span className="conf-badge">{s.tag}</span>
+                            </div>
+                            <div className="admin-card-meta">
+                                <span className="sighting-id">{s.id}</span>
+                                <span className="version-tag">v.1.0</span>
+                            </div>
+                            <Link to={`/review-image/${s.id.replace('#', '')}`} className="admin-review-btn">Review</Link>
+                        </div>
+                    ))}
+                </div>
+                <button className="admin-show-more">Show More</button>
+            </section>
+
+            <section className="admin-section">
+                <h3 className="section-title">Analytics</h3>
+                <div className="analytics-layout">
+                    <div className="admin-chart-card">
+                        <h4>Identification Accuracy Trend</h4>
+                        <div style={{ height: 200 }}>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={accuracyData}>
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{fontSize: 10}} />
+                                    <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10}} />
+                                    <Tooltip />
+                                    <Line type="monotone" dataKey="acc" stroke="#2d6a4f" strokeWidth={3} dot={{ r: 4, fill: '#2d6a4f' }} />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+                    <div className="admin-chart-card">
+                        <h4>Positive vs Unverified Identifications</h4>
+                        <div style={{ height: 200, position: 'relative' }}>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                    <Pie data={pieData} innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
+                                        <Cell fill="#2d6a4f" />
+                                        <Cell fill="#e0e0e0" />
+                                    </Pie>
+                                    <Tooltip />
+                                </PieChart>
+                            </ResponsiveContainer>
+                            <div className="chart-overlay-text">72%</div>
+                        </div>
+                    </div>
+                    <div className="admin-chart-card span-full">
+                        <h4>User Activity Distribution</h4>
+                        <div style={{ height: 250 }}>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                    <Pie data={userActivity} cx="50%" cy="50%" outerRadius={100} fill="#8884d8" dataKey="value" label={({name, value}) => `${name} ${value}%`}>
+                                        {userActivity.map((entry, index) => (
+                                            <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                                        ))}
+                                    </Pie>
+                                    <Tooltip />
+                                </PieChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    );
+}
+
+const adminStyles = `
+    .admin-dashboard-page { padding: 20px; max-width: 1200px; margin: auto; }
+    .search-container { text-align: center; margin-bottom: 30px; }
+    .search-bar { width: 60%; padding: 12px 25px; border-radius: 25px; border: 1px solid #ddd; background: #fcfcfc; outline: none; }
+    .admin-section { margin-bottom: 45px; }
+    .section-title { font-size: 20px; font-weight: 600; margin-bottom: 20px; color: #333; }
+    .activity-stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+    .admin-stat-card { background: white; padding: 25px 20px; border-radius: 12px; border: 1px solid #eee; position: relative; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
+    .border-green { border-top: 5px solid #2d6a4f; }
+    .border-yellow { border-top: 5px solid #ffb703; }
+    .border-red { border-top: 5px solid #e63946; }
+    .admin-stat-value { font-size: 28px; margin: 0; color: #222; }
+    .admin-stat-label { font-size: 11px; color: #888; margin: 5px 0 0; }
+    .status-dot { position: absolute; top: 15px; right: 15px; width: 8px; height: 8px; border-radius: 50%; }
+    .dot-green { background: #2d6a4f; } .dot-yellow { background: #ffb703; } .dot-red { background: #e63946; }
+    .recent-sightings-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    .admin-quoll-card { background: white; border: 1px solid #eee; border-radius: 10px; padding: 12px; }
+    .admin-img-wrap { position: relative; width: 100%; height: 180px; overflow: hidden; border-radius: 6px; }
+    .admin-img-wrap img { width: 100%; height: 100%; object-fit: cover; }
+    .conf-badge { position: absolute; top: 8px; left: 8px; background: rgba(45,106,79,0.85); color: white; padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; }
+    .admin-card-meta { display: flex; justify-content: space-between; margin-top: 10px; font-size: 12px; color: #aaa; }
+    .admin-review-btn { display: block; background: #2d6a4f; color: white; text-align: center; text-decoration: none; padding: 10px; border-radius: 6px; margin-top: 12px; font-weight: 600; font-size: 13px; }
+    .admin-show-more { width: 100%; background: #2d6a4f; color: white; border: none; padding: 15px; border-radius: 8px; margin-top: 25px; font-weight: bold; cursor: pointer; }
+    .analytics-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; }
+    .admin-chart-card { background: #fff; border: 1px solid #eee; border-radius: 12px; padding: 20px; position: relative; }
+    .admin-chart-card h4 { margin: 0 0 20px; font-size: 14px; color: #444; }
+    .span-full { grid-column: span 2; }
+    .chart-overlay-text { position: absolute; top: 55%; left: 50%; transform: translate(-50%, -50%); font-size: 24px; font-weight: bold; color: #2d6a4f; }
+`;
+
+
+
 function Footer() {
     return (
         <footer className="site-footer">
@@ -169,14 +332,11 @@ function Footer() {
                     </div>
                 </div>
             </div>
-            <div className="footer-bottom">© 2025 WildlifeTracker. All rights reserved.</div>
+            <div className="footer-bottom">© 2026 WildlifeTracker. All rights reserved.</div>
         </footer>
     );
 }
 
-/* ============================================================
-   HELP (placeholder)
-   ============================================================ */
 function HelpPage() {
     return (
         <div className="page-header">
@@ -186,9 +346,6 @@ function HelpPage() {
     );
 }
 
-/* ============================================================
-   PENDING REVIEW (design: metrics, category cards, review list)
-   ============================================================ */
 function PendingReviewPage() {
     const [stats, setStats] = useState<DashboardStats | null>(null);
     const [report, setReport] = useState<ReportData | null>(null);
@@ -363,9 +520,6 @@ function ReviewCategoryCard({ title, tag, tagClass, imageCount, onReview }: { ti
     );
 }
 
-/* ============================================================
-   DASHBOARD (Home — WildlifeTracker approved design)
-   ============================================================ */
 function Dashboard() {
     const [stats, setStats] = useState<DashboardStats | null>(null);
     const [report, setReport] = useState<ReportData | null>(null);
@@ -416,7 +570,6 @@ function Dashboard() {
         ? [camsWithCoords[0].latitude!, camsWithCoords[0].longitude!]
         : [-34.4, 150.3];
 
-    // Activity by time of day: group hourly_activity into Dawn/Morning/Afternoon/Evening/Night
     const hourGroups = [
         { name: 'Dawn', hours: [5, 6, 7] },
         { name: 'Morning', hours: [8, 9, 10, 11] },
@@ -433,14 +586,12 @@ function Dashboard() {
         count: g.hours.reduce((sum, h) => sum + (hourlyMap.get(h) || 0), 0),
     }));
 
-    // Observation trends: 6 months (use report total or mock)
     const totalDet = report?.total_detections ?? stats.total_detections;
     const observationTrends = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'].map((name, i) => ({
         name,
         count: Math.round(totalDet * (0.6 + (i * 0.1)) + Math.random() * 20),
     }));
 
-    // Species abundance: Species, Individuals, Density, Trend (design uses Koala/Quoll/Kangaroo; we use API species + mock density/trend)
     const speciesAbundance = species.slice(0, 8).map((s, i) => ({
         species: s.species,
         individuals: s.count,
@@ -589,9 +740,6 @@ function Dashboard() {
     );
 }
 
-/* ============================================================
-   IMAGE BROWSER
-   ============================================================ */
 function ImageBrowser() {
     const [images, setImages] = useState<PaginatedResponse<ImageData> | null>(null);
     const [page, setPage] = useState(1);
@@ -723,9 +871,6 @@ function ImageBrowser() {
     );
 }
 
-/* ============================================================
-   DETECTION VIEWER
-   ============================================================ */
 function DetectionViewer() {
     const [species, setSpecies] = useState<SpeciesCount[]>([]);
     const [loading, setLoading] = useState(true);
@@ -770,691 +915,6 @@ function DetectionViewer() {
     );
 }
 
-/* ============================================================
-   INDIVIDUAL QUOLLS
-   ============================================================ */
-function Individuals() {
-    const [individuals, setIndividuals] = useState<IndividualData[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-
-    useEffect(() => { fetchIndividuals().then(setIndividuals).catch((e) => setError(e.message)).finally(() => setLoading(false)); }, []);
-    if (loading) return <LoadingState />;
-    if (error) return <ErrorState message={error} />;
-
-    return (
-        <>
-            <div className="page-header"><h2>Quoll Profiles</h2><p>Known individual Spotted-tailed Quolls</p></div>
-            {individuals.length === 0 ? <div className="empty-state"><div className="icon">🐾</div><h3>No individuals imported yet</h3></div> : (
-                <>
-                    <div className="stats-grid" style={{ marginBottom: '2rem' }}>
-                        <StatCard icon="🐾" value={fmt(individuals.length)} label="Known Individuals" />
-                        <StatCard icon="👁️" value={fmt(individuals.reduce((s, i) => s + i.total_sightings, 0))} label="Total Sightings" />
-                    </div>
-                    <div className="quoll-grid">
-                        {individuals.map((ind) => (
-                            <div key={ind.individual_id} className="quoll-card">
-                                <div className="quoll-id">🐾 {ind.individual_id}</div>
-                                <div className="quoll-species">{ind.species}</div>
-                                <div className="quoll-stats">
-                                    <div className="quoll-stat"><div className="label">Sightings</div><div className="value">{ind.total_sightings}</div></div>
-                                    <div className="quoll-stat"><div className="label">First Seen</div><div className="value">{ind.first_seen ? new Date(ind.first_seen).toLocaleDateString() : '—'}</div></div>
-                                    <div className="quoll-stat"><div className="label">Last Seen</div><div className="value">{ind.last_seen ? new Date(ind.last_seen).toLocaleDateString() : '—'}</div></div>
-                                    <div className="quoll-stat"><div className="label">Active</div><div className="value">{ind.first_seen && ind.last_seen ? `${Math.ceil((new Date(ind.last_seen).getTime() - new Date(ind.first_seen).getTime()) / 86400000)}d` : '—'}</div></div>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </>
-            )}
-        </>
-    );
-}
-
-/* ============================================================
-   BATCH UPLOAD
-   ============================================================ */
-function parseFolderStructure(files: File[]) {
-    const cameras = new Map<string, number>();
-    let collectionName = '';
-    for (const f of files) {
-        const relPath = (f as any).webkitRelativePath || '';
-        const parts = relPath.split('/').filter(Boolean);
-        if (parts.length >= 2 && !collectionName) collectionName = parts[0];
-        if (parts.length >= 3) {
-            const cam = parts[1];
-            cameras.set(cam, (cameras.get(cam) || 0) + 1);
-        }
-    }
-    return { collectionName, cameras };
-}
-
-function BatchUpload() {
-    const [job, setJob] = useState<JobStatus | null>(null);
-    const [uploading, setUploading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-    const [dragOver, setDragOver] = useState(false);
-    const [collectionName, setCollectionName] = useState('');
-    const folderRef = useRef<HTMLInputElement>(null);
-
-    const folderInfo = selectedFiles.length > 0 ? parseFolderStructure(selectedFiles) : null;
-
-    useEffect(() => {
-        if (folderInfo?.collectionName && !collectionName) setCollectionName(folderInfo.collectionName);
-    }, [folderInfo?.collectionName]);
-
-    const addFiles = (files: FileList | File[]) => {
-        const arr = Array.from(files).filter((f) => /\.(jpe?g|png)$/i.test(f.name));
-        setSelectedFiles(arr);
-    };
-
-    const handleDrop = (e: React.DragEvent) => {
-        e.preventDefault();
-        setDragOver(false);
-        if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
-    };
-
-    const handleUpload = async () => {
-        if (selectedFiles.length === 0) return;
-        setUploading(true);
-        setError(null);
-        try {
-            const res = await uploadBatch(selectedFiles, collectionName || undefined);
-            pollJob(res.job_id);
-        } catch (e: any) {
-            const msg = e?.message?.includes('fetch')
-                ? 'Upload connection dropped. Try smaller batches or retry.'
-                : e.message;
-            setError(msg);
-            setUploading(false);
-        }
-    };
-
-    const pollJob = useCallback(async (jobId: number) => {
-        try {
-            const s = await fetchJobStatus(jobId);
-            setJob(s);
-            setUploading(false);
-            if (s.status === 'queued' || s.status === 'processing') {
-                setTimeout(() => pollJob(jobId), 2000);
-            }
-        } catch {
-            setUploading(false);
-        }
-    }, []);
-
-    return (
-        <>
-            <div className="page-header"><h2>Upload Images</h2><p>Select a collection folder containing camera trap subfolders.</p></div>
-
-            <div
-                className={`dropzone ${dragOver ? 'dragover' : ''}`}
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={handleDrop}
-                onClick={() => folderRef.current?.click()}
-            >
-                <input
-                    ref={folderRef}
-                    type="file"
-                    multiple
-                    accept=".jpg,.jpeg,.png"
-                    style={{ display: 'none' }}
-                    {...({ webkitdirectory: '', directory: '' } as any)}
-                    onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }}
-                />
-                <div className="dropzone-icon">
-                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
-                    </svg>
-                </div>
-                <p className="dropzone-text">Drop folder here or click to browse</p>
-                <p className="dropzone-hint">Select the collection folder (e.g. MortonNP_June2025/) containing camera subfolders</p>
-                <div className="dropzone-buttons">
-                    <button type="button" className="btn btn-primary" onClick={(e) => { e.stopPropagation(); folderRef.current?.click(); }}>Choose Folder</button>
-                </div>
-            </div>
-
-            {/* Folder summary: collection + cameras detected */}
-            {folderInfo && selectedFiles.length > 0 && !job && (
-                <div className="upload-summary card">
-                    <div className="card-header"><h3>Folder Summary</h3></div>
-                    <div className="card-body">
-                        <div className="upload-summary-field">
-                            <label>Collection Name</label>
-                            <input className="filter-select" style={{ width: '100%' }} value={collectionName} onChange={(e) => setCollectionName(e.target.value)} placeholder="e.g. MortonNP_June2025" />
-                        </div>
-                        <div className="upload-summary-stats">
-                            <div className="upload-summary-stat">
-                                <span className="num">{selectedFiles.length}</span>
-                                <span className="label">Total Images</span>
-                            </div>
-                            <div className="upload-summary-stat">
-                                <span className="num">{folderInfo.cameras.size}</span>
-                                <span className="label">Camera Traps Detected</span>
-                            </div>
-                        </div>
-                        {folderInfo.cameras.size > 0 && (
-                            <div className="upload-camera-list">
-                                <h4>Cameras</h4>
-                                <div className="upload-camera-grid">
-                                    {Array.from(folderInfo.cameras.entries()).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })).map(([cam, count]) => (
-                                        <div key={cam} className="upload-camera-chip">
-                                            <span className="cam-name">{cam}</span>
-                                            <span className="cam-count">{count} images</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-                        {folderInfo.cameras.size === 0 && (
-                            <p style={{ color: 'var(--warning)', fontSize: '0.85rem', marginTop: '0.75rem' }}>
-                                No camera subfolders detected. Images will be uploaded without camera assignment. Expected structure: Collection/CameraName/image.jpg
-                            </p>
-                        )}
-                        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem' }}>
-                            <button className="btn btn-primary" onClick={handleUpload} disabled={uploading}>{uploading ? 'Uploading...' : `Upload & Process (${selectedFiles.length} images)`}</button>
-                            <button className="btn btn-outline" onClick={() => { setSelectedFiles([]); setCollectionName(''); }}>Clear</button>
-                        </div>
-                        {error && <p style={{ color: 'var(--danger)', marginTop: '0.5rem', fontSize: '0.85rem' }}>{error}</p>}
-                    </div>
-                </div>
-            )}
-
-            {/* Batch processing progress */}
-            {job && (
-                <div className="upload-batch-progress card">
-                    <div className="card-header">
-                        <h3>Batch Processing — {job.batch_name || `Job #${job.id}`}</h3>
-                        <span className={`tag ${job.status === 'completed' ? 'tag-primary' : job.status === 'failed' ? 'tag-danger' : 'tag-accent'}`}>{job.status}</span>
-                    </div>
-                    <div className="card-body">
-                        <div className="progress-bar-bg"><div className="progress-bar-fill" style={{ width: `${job.percent}%` }} /></div>
-                        <div className="progress-label"><span>{job.processed_images} / {job.total_images} processed</span><span>{job.percent.toFixed(1)}%</span></div>
-                        {job.failed_images > 0 && <p style={{ color: 'var(--danger)', marginTop: '0.5rem', fontSize: '0.85rem' }}>{job.failed_images} failed</p>}
-                        {job.status === 'failed' && job.error_message && <p style={{ color: 'var(--danger)', marginTop: '0.5rem', fontSize: '0.85rem' }}>{job.error_message}</p>}
-                        {job.status === 'completed' && <p style={{ color: 'var(--success)', marginTop: '0.5rem', fontSize: '0.85rem' }}>All images processed successfully.</p>}
-                    </div>
-                </div>
-            )}
-        </>
-    );
-}
-
-/* ============================================================
-   REPORTS
-   ============================================================ */
-function Reports() {
-    const [report, setReport] = useState<ReportData | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-
-    useEffect(() => { fetchReport().then(setReport).catch((e) => setError(e.message)).finally(() => setLoading(false)); }, []);
-    if (loading) return <LoadingState />;
-    if (error) return <ErrorState message={error} />;
-    if (!report) return null;
-
-    const downloadFile = async (url: string, filename: string) => {
-        try {
-            const res = await fetch(url);
-            if (!res.ok) throw new Error(`Download failed (${res.status})`);
-            const blob = await res.blob();
-            const objectUrl = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = objectUrl;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(objectUrl);
-        } catch (e: any) {
-            setError(e.message || 'Download failed');
-        }
-    };
-
-    return (
-        <>
-            <div className="page-header"><h2>Reports</h2><p>Batch processing results and data visualizations</p></div>
-            <div className="stats-grid">
-                <StatCard icon="📷" value={fmt(report.total_images)} label="Total Images" />
-                <StatCard icon="✅" value={fmt(report.processed_images)} label="Processed" />
-                <StatCard icon="🔲" value={fmt(report.empty_images)} label="Empty" />
-                <StatCard icon="🔍" value={fmt(report.total_detections)} label="Detections" />
-                <StatCard icon="🏷️" value={fmt(report.total_species)} label="Species" />
-                <StatCard icon="🐾" value={fmt(report.quoll_detections)} label="Quolls" />
-            </div>
-
-            {report.mean_detection_confidence != null && (
-                <div className="card" style={{ marginBottom: '1.5rem' }}>
-                    <div className="card-header"><h3>Confidence Statistics</h3></div>
-                    <div className="card-body" style={{ display: 'flex', gap: '2rem' }}>
-                        <div>Detection avg: <strong>{report.mean_detection_confidence.toFixed(3)}</strong></div>
-                        <div>Classification avg: <strong>{(report.mean_classification_confidence ?? 0).toFixed(3)}</strong></div>
-                    </div>
-                </div>
-            )}
-
-            <div className="chart-grid">
-                {report.species_distribution.length > 0 && (
-                    <div className="card">
-                        <div className="card-header"><h3>Species Distribution</h3></div>
-                        <div className="card-body" style={{ height: 300 }}>
-                            <ResponsiveContainer>
-                                <PieChart>
-                                    <Pie data={report.species_distribution} dataKey="count" nameKey="species" cx="50%" cy="50%" outerRadius={100} label={({ species, percent }) => `${species.split('|').pop()?.trim()} ${(percent * 100).toFixed(0)}%`}>
-                                        {report.species_distribution.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-                                    </Pie>
-                                    <Tooltip />
-                                </PieChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-                )}
-                {report.hourly_activity.length > 0 && (
-                    <div className="card">
-                        <div className="card-header"><h3>Hourly Activity</h3></div>
-                        <div className="card-body" style={{ height: 300 }}>
-                            <ResponsiveContainer>
-                                <BarChart data={report.hourly_activity}>
-                                    <XAxis dataKey="hour" tick={{ fill: '#9ca3af', fontSize: 12 }} />
-                                    <YAxis tick={{ fill: '#9ca3af', fontSize: 12 }} />
-                                    <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid rgba(255,255,255,0.1)' }} />
-                                    <Bar dataKey="detections" fill="#10b981" radius={[4, 4, 0, 0]} />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-                )}
-                {report.camera_counts.length > 0 && (
-                    <div className="card">
-                        <div className="card-header"><h3>Detections by Camera</h3></div>
-                        <div className="card-body" style={{ height: 300 }}>
-                            <ResponsiveContainer>
-                                <BarChart data={report.camera_counts} layout="vertical">
-                                    <XAxis type="number" tick={{ fill: '#9ca3af', fontSize: 12 }} />
-                                    <YAxis dataKey="camera" type="category" tick={{ fill: '#9ca3af', fontSize: 11 }} width={50} />
-                                    <Tooltip contentStyle={{ background: '#1f2937', border: '1px solid rgba(255,255,255,0.1)' }} />
-                                    <Bar dataKey="detections" fill="#3b82f6" radius={[0, 4, 4, 0]} />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-                )}
-            </div>
-
-            <div className="card">
-                <div className="card-header"><h3>Export</h3></div>
-                <div className="card-body" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    <button className="btn btn-outline" onClick={() => downloadFile(getExportUrl('csv'), 'wildlife_report.csv')}>Report CSV</button>
-                    <button className="btn btn-outline" onClick={() => downloadFile(getExportUrl('json'), 'wildlife_report.json')}>Report JSON</button>
-                    <button className="btn btn-primary" onClick={() => downloadFile(getQuollExportUrl('csv'), 'quoll_detections.csv')}>Quoll Detections CSV</button>
-                    <button className="btn btn-outline" onClick={() => downloadFile(getMetadataExportUrl('csv'), 'full_metadata.csv')}>Full Metadata CSV</button>
-                </div>
-            </div>
-        </>
-    );
-}
-
-/* ============================================================
-   IMAGE REVIEW (annotation workflow)
-   ============================================================ */
-function ImageReview() {
-    const params = useParams();
-    const id = parseInt(params.detectionId || '0');
-    const [det, setDet] = useState<DetectionDetail | null>(null);
-    const [anns, setAnns] = useState<AnnotationData[]>([]);
-    const [form, setForm] = useState<{ is_correct: boolean; corrected_species: string; notes: string; individual_id: string; flag_for_retraining: boolean; bbox?: { x: number; y: number; w: number; h: number } }>({ is_correct: true, corrected_species: '', notes: '', individual_id: '', flag_for_retraining: false });
-    const [saving, setSaving] = useState(false);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        if (!id) return;
-        Promise.all([fetchDetectionDetail(id), fetchAnnotations(id)])
-            .then(([d, a]) => { setDet(d); setAnns(a); }).finally(() => setLoading(false));
-    }, [id]);
-
-    const submit = async () => {
-        if (!det) return;
-        setSaving(true);
-        try {
-            const notes = form.bbox ? JSON.stringify({ bbox: form.bbox, type: 'user_drawn' }) : form.notes;
-            const ann = await createAnnotation({
-                detection_id: det.id,
-                is_correct: form.is_correct,
-                corrected_species: form.corrected_species || undefined,
-                notes: notes || undefined,
-                individual_id: form.individual_id || undefined,
-                flag_for_retraining: form.flag_for_retraining,
-            });
-            setAnns([ann, ...anns]);
-            setForm({ is_correct: true, corrected_species: '', notes: '', individual_id: '', flag_for_retraining: false, bbox: undefined });
-        } catch { }
-        setSaving(false);
-    };
-
-    if (loading) return <LoadingState />;
-    if (!det) return <div className="empty-state"><h3>Detection not found</h3></div>;
-
-    return (
-        <>
-            <div className="page-header"><h2>Review Detection #{det.id}</h2><p>{det.image?.filename} — {det.species}</p></div>
-            <div className="chart-grid">
-                <div className="card">
-                    <div className="card-header"><h3>Image</h3></div>
-                    <div className="card-body" style={{ textAlign: 'center' }}>
-                        {det.crop_path && <img src={storageUrl(det.crop_path)} alt="crop" style={{ maxWidth: '100%', borderRadius: 8 }} />}
-                        <div style={{ marginTop: '1rem', fontSize: '0.85rem' }}>
-                            <div><strong>Species:</strong> {det.species || 'Unknown'}</div>
-                            <div><strong>Confidence:</strong> {det.classification_confidence?.toFixed(3)}</div>
-                            <div><strong>Detection conf:</strong> {det.detection_confidence.toFixed(3)}</div>
-                            <div><strong>Model:</strong> {det.model_version}</div>
-                            <div><strong>Camera:</strong> {det.camera?.name || '—'}</div>
-                            <div><strong>Timestamp:</strong> {det.image?.captured_at || '—'}</div>
-                            <div><strong>Bbox:</strong> [{det.bbox_x.toFixed(3)}, {det.bbox_y.toFixed(3)}, {det.bbox_w.toFixed(3)}, {det.bbox_h.toFixed(3)}]</div>
-                        </div>
-                    </div>
-                </div>
-                <div className="card">
-                    <div className="card-header"><h3>Annotate</h3></div>
-                    <div className="card-body">
-                        <div style={{ marginBottom: '1rem' }}>
-                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>ML prediction correct?</label>
-                            <select className="filter-select" value={String(form.is_correct)} onChange={(e) => setForm({ ...form, is_correct: e.target.value === 'true' })}>
-                                <option value="true">Yes, correct</option><option value="false">No, incorrect</option>
-                            </select>
-                        </div>
-                        {!form.is_correct && (
-                            <div style={{ marginBottom: '1rem' }}>
-                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Corrected species</label>
-                                <input className="filter-select" style={{ width: '100%' }} value={form.corrected_species} onChange={(e) => setForm({ ...form, corrected_species: e.target.value })} placeholder="e.g. Trichosurus sp | Brushtail Possum sp" />
-                            </div>
-                        )}
-                        <div style={{ marginBottom: '1rem' }}>
-                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Individual ID (e.g. 02Q2)</label>
-                            <input className="filter-select" style={{ width: '100%' }} value={form.individual_id} onChange={(e) => setForm({ ...form, individual_id: e.target.value })} />
-                        </div>
-                        <div style={{ marginBottom: '1rem' }}>
-                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Notes</label>
-                            <textarea className="filter-select" style={{ width: '100%', minHeight: 60, resize: 'vertical' }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
-                        </div>
-                        <div style={{ marginBottom: '1rem' }}>
-                            <label style={{ fontSize: '0.8rem', cursor: 'pointer' }}>
-                                <input type="checkbox" checked={form.flag_for_retraining} onChange={(e) => setForm({ ...form, flag_for_retraining: e.target.checked })} style={{ marginRight: '0.5rem' }} />
-                                Flag for retraining dataset
-                            </label>
-                        </div>
-                        {!form.is_correct && (
-                            <div style={{ marginBottom: '1rem' }}>
-                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Draw box around animal (feedback for model)</label>
-                                {det.image?.file_path && (
-                                    <BboxDrawer
-                                        imageUrl={storageUrl(det.image.file_path)}
-                                        onDraw={(bbox) => setForm((f) => ({ ...f, bbox }))}
-                                    />
-                                )}
-                            </div>
-                        )}
-                        <button className="btn btn-primary" onClick={submit} disabled={saving}>{saving ? 'Saving...' : 'Save Annotation'}</button>
-
-                        {anns.length > 0 && (
-                            <div style={{ marginTop: '1.5rem' }}>
-                                <h4 style={{ fontSize: '0.85rem', marginBottom: '0.5rem' }}>Previous Annotations</h4>
-                                {anns.map((a) => (
-                                    <div key={a.id} style={{ background: 'var(--bg-primary)', borderRadius: 8, padding: '0.75rem', marginBottom: '0.5rem', fontSize: '0.8rem' }}>
-                                        <div>{a.is_correct ? '✅ Correct' : '❌ Incorrect'}{a.corrected_species && ` → ${a.corrected_species}`}</div>
-                                        {a.notes && <div style={{ color: 'var(--text-muted)' }}>{a.notes}</div>}
-                                        <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>{a.annotator} — {a.created_at}</div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                </div>
-            </div>
-        </>
-    );
-}
-
-/* Draw bbox on image for annotation / missed-detection feedback */
-function BboxDrawer({ imageUrl, onDraw }: { imageUrl: string; onDraw: (bbox: { x: number; y: number; w: number; h: number }) => void }) {
-    const imgRef = useRef<HTMLImageElement>(null);
-    const drawingRef = useRef(false);
-    const startRef = useRef<{ x: number; y: number } | null>(null);
-    const [liveBox, setLiveBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-    const [savedBox, setSavedBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-
-    const toRelative = useCallback((clientX: number, clientY: number) => {
-        const img = imgRef.current;
-        if (!img) return { x: 0, y: 0 };
-        const rect = img.getBoundingClientRect();
-        return {
-            x: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
-            y: Math.max(0, Math.min(1, (clientY - rect.top) / rect.height)),
-        };
-    }, []);
-
-    const handlePointerDown = useCallback((e: React.PointerEvent) => {
-        e.preventDefault();
-        (e.target as HTMLElement).setPointerCapture(e.pointerId);
-        const pt = toRelative(e.clientX, e.clientY);
-        startRef.current = pt;
-        drawingRef.current = true;
-        setLiveBox({ x: pt.x, y: pt.y, w: 0, h: 0 });
-        setSavedBox(null);
-    }, [toRelative]);
-
-    const handlePointerMove = useCallback((e: React.PointerEvent) => {
-        if (!drawingRef.current || !startRef.current) return;
-        const pt = toRelative(e.clientX, e.clientY);
-        const s = startRef.current;
-        setLiveBox({
-            x: Math.min(s.x, pt.x),
-            y: Math.min(s.y, pt.y),
-            w: Math.abs(pt.x - s.x),
-            h: Math.abs(pt.y - s.y),
-        });
-    }, [toRelative]);
-
-    const handlePointerUp = useCallback((e: React.PointerEvent) => {
-        if (!drawingRef.current || !startRef.current) return;
-        drawingRef.current = false;
-        const pt = toRelative(e.clientX, e.clientY);
-        const s = startRef.current;
-        const box = {
-            x: Math.min(s.x, pt.x),
-            y: Math.min(s.y, pt.y),
-            w: Math.max(Math.abs(pt.x - s.x), 0.02),
-            h: Math.max(Math.abs(pt.y - s.y), 0.02),
-        };
-        startRef.current = null;
-        setLiveBox(null);
-        setSavedBox(box);
-        onDraw(box);
-    }, [toRelative, onDraw]);
-
-    const box = liveBox || savedBox;
-
-    return (
-        <div style={{ userSelect: 'none' }}>
-            <div
-                style={{ position: 'relative', display: 'inline-block', cursor: 'crosshair', maxWidth: '100%', touchAction: 'none' }}
-                onPointerDown={handlePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerUp={handlePointerUp}
-            >
-                <img ref={imgRef} src={imageUrl} alt="Draw box" draggable={false} style={{ maxWidth: '100%', height: 'auto', display: 'block', borderRadius: 8 }} />
-                {box && box.w > 0.005 && box.h > 0.005 && (
-                    <div
-                        style={{
-                            position: 'absolute',
-                            left: `${box.x * 100}%`,
-                            top: `${box.y * 100}%`,
-                            width: `${box.w * 100}%`,
-                            height: `${box.h * 100}%`,
-                            border: '3px solid #10b981',
-                            background: 'rgba(16, 185, 129, 0.15)',
-                            borderRadius: 4,
-                            pointerEvents: 'none',
-                        }}
-                    />
-                )}
-            </div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
-                {savedBox ? '✓ Box drawn — drag again to redraw' : 'Click and drag on the image to draw a box around the animal'}
-            </div>
-        </div>
-    );
-}
-
-/* ============================================================
-   REVIEW IMAGE — step-based review from any image context
-   Step 1: What action?  (Confirm empty / Has animal)
-   Step 2 (if has animal): Species? → Draw bbox → Save
-   ============================================================ */
-function ReviewImage() {
-    const { imageId } = useParams();
-    const id = parseInt(imageId || '0');
-    const [image, setImage] = useState<ImageData | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [step, setStep] = useState<'choose' | 'annotate' | 'done'>('choose');
-    const [bbox, setBbox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-    const [species, setSpecies] = useState('Spotted-tailed Quoll');
-    const [individualId, setIndividualId] = useState('');
-    const [notes, setNotes] = useState('');
-    const [saving, setSaving] = useState(false);
-
-    useEffect(() => {
-        if (!id) return;
-        fetchImageDetail(id).then((data: any) => setImage(data)).catch(() => {}).finally(() => setLoading(false));
-    }, [id]);
-
-    const confirmEmpty = async () => {
-        if (!image) return;
-        setSaving(true);
-        try {
-            await createMissedDetection(image.id, { bbox_x: 0, bbox_y: 0, bbox_w: 0, bbox_h: 0, species: '__confirmed_empty__', flag_for_retraining: false });
-            setStep('done');
-        } catch { }
-        setSaving(false);
-    };
-
-    const submitAnimal = async () => {
-        if (!image || !bbox) return;
-        setSaving(true);
-        try {
-            await createMissedDetection(image.id, { bbox_x: bbox.x, bbox_y: bbox.y, bbox_w: bbox.w, bbox_h: bbox.h, species, flag_for_retraining: true });
-            setStep('done');
-        } catch { }
-        setSaving(false);
-    };
-
-    if (loading) return <LoadingState />;
-    if (!image) return <div className="empty-state"><h3>Image not found</h3></div>;
-
-    if (step === 'done') return (
-        <div className="review-done">
-            <div className="review-done-icon">✓</div>
-            <h2>Review saved</h2>
-            <p>Thank you — this feedback will help improve the model.</p>
-            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', marginTop: '1rem' }}>
-                <Link to="/pending-review" className="btn btn-primary">Back to Pending Review</Link>
-                <button type="button" className="btn btn-outline" onClick={() => window.history.back()}>Go Back</button>
-            </div>
-        </div>
-    );
-
-    return (
-        <div>
-            <nav className="breadcrumb"><Link to="/">Home</Link><span className="sep">›</span><span>Review Image</span></nav>
-            <div className="page-header"><h2>Review — {image.filename}</h2><p>Decide how to classify this image.</p></div>
-
-            <div className="review-image-layout">
-                <div className="review-image-left card">
-                    <div className="card-body" style={{ textAlign: 'center' }}>
-                        {step === 'choose' && <img src={storageUrl(image.file_path)} alt={image.filename} style={{ maxWidth: '100%', maxHeight: '65vh', borderRadius: 8 }} />}
-                        {step === 'annotate' && (
-                            <BboxDrawer imageUrl={storageUrl(image.file_path)} onDraw={setBbox} />
-                        )}
-                    </div>
-                    <div className="card-body" style={{ paddingTop: 0, display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                        <span className="tag tag-muted">Image #{image.id}</span>
-                        {image.processed ? <span className="tag tag-primary">Processed</span> : <span className="tag tag-muted">Pending</span>}
-                        {image.has_animal === true && <span className="tag tag-info">Has Animal</span>}
-                        {image.has_animal === false && <span className="tag tag-muted">Marked Empty</span>}
-                        {image.camera_id && <span className="tag tag-info">Cam {image.camera_id}</span>}
-                    </div>
-                </div>
-
-                <div className="review-image-right">
-                    {step === 'choose' && (
-                        <div className="card">
-                            <div className="card-header"><h3>What do you see?</h3></div>
-                            <div className="card-body review-action-choices">
-                                <button type="button" className="review-action-btn empty" onClick={confirmEmpty} disabled={saving}>
-                                    <span className="review-action-icon">⬜</span>
-                                    <span>Image is empty</span>
-                                    <span className="review-action-hint">Confirm no animal present</span>
-                                </button>
-                                <button type="button" className="review-action-btn has-animal" onClick={() => setStep('annotate')}>
-                                    <span className="review-action-icon">🐾</span>
-                                    <span>Has animal</span>
-                                    <span className="review-action-hint">Draw a box around the animal</span>
-                                </button>
-                            </div>
-                        </div>
-                    )}
-
-                    {step === 'annotate' && (
-                        <div className="card">
-                            <div className="card-header"><h3>Annotate Animal</h3></div>
-                            <div className="card-body">
-                                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>Draw a box around the animal on the image, then fill in the details below.</p>
-                                {bbox && <div className="tag tag-primary" style={{ marginBottom: '1rem' }}>Box drawn ✓</div>}
-                                <div className="review-field">
-                                    <label>Species</label>
-                                    <select className="filter-select" value={species} onChange={(e) => setSpecies(e.target.value)}>
-                                        <option>Spotted-tailed Quoll</option>
-                                        <option>Quoll (unknown sp)</option>
-                                        <option>Red Kangaroo</option>
-                                        <option>Common Wombat</option>
-                                        <option>Short-beaked Echidna</option>
-                                        <option>Tasmanian Devil</option>
-                                        <option>Bennett's Wallaby</option>
-                                        <option>Common Brushtail Possum</option>
-                                        <option>Unknown</option>
-                                        <option>Other</option>
-                                    </select>
-                                </div>
-                                <div className="review-field">
-                                    <label>Individual ID (optional, e.g. 02Q2)</label>
-                                    <input className="filter-select" style={{ width: '100%' }} value={individualId} onChange={(e) => setIndividualId(e.target.value)} placeholder="Leave blank if unknown" />
-                                </div>
-                                <div className="review-field">
-                                    <label>Notes (optional)</label>
-                                    <textarea className="filter-select" style={{ width: '100%', minHeight: 50, resize: 'vertical' }} value={notes} onChange={(e) => setNotes(e.target.value)} />
-                                </div>
-                                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
-                                    <button className="btn btn-primary" onClick={submitAnimal} disabled={!bbox || saving}>{saving ? 'Saving...' : 'Save Annotation'}</button>
-                                    <button className="btn btn-outline" onClick={() => setStep('choose')}>Back</button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function ReviewEmptyImage() {
-    const { imageId } = useParams();
-    return <Navigate to={`/review-image/${imageId}`} replace />;
-}
-
-/* ============================================================
-   PROFILES — Species & Individuals Explorer (hierarchy)
-   ============================================================ */
 function SpeciesExplorer() {
     const [species, setSpecies] = useState<SpeciesCount[]>([]);
     const [individuals, setIndividuals] = useState<IndividualData[]>([]);
@@ -1680,22 +1140,9 @@ function SpeciesImages() {
                                 {selected.has_animal === false && <span className="tag tag-muted">Empty</span>}
                                 {selected.camera_id && <span className="tag tag-info">Cam {selected.camera_id}</span>}
                             </div>
-                            {detections.length > 0 && (
-                                <div style={{ marginBottom: '1rem' }}>
-                                    <div style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.4rem' }}>Detections ({detections.length})</div>
-                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-                                        {detections.map((det) => (
-                                            <span key={det.id} className="tag tag-primary" style={{ fontSize: '0.7rem' }}>
-                                                {det.species || 'unknown'} — {det.classification_confidence != null ? (det.classification_confidence * 100).toFixed(1) + '%' : 'N/A'} conf
-                                            </span>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
                             <div style={{ display: 'flex', gap: '0.5rem' }}>
                                 <Link to={`/review-image/${selected.id}`} className="btn btn-primary">Review Image</Link>
                             </div>
-                            <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.75rem' }}>Use ←/→ to navigate, Esc to close</div>
                         </div>
                     </div>
                 </div>
@@ -1742,172 +1189,320 @@ function IndividualImages() {
     );
 }
 
-/* ============================================================
-   ADMIN PANEL
-   ============================================================ */
-function AdminPanel() {
-    const [users, setUsers] = useState<UserData[]>([]);
-    const [metrics, setMetrics] = useState<any>(null);
-    const [loading, setLoading] = useState(true);
+function BatchUpload() {
+    const [job, setJob] = useState<JobStatus | null>(null);
+    const [uploading, setUploading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+    const [dragOver, setDragOver] = useState(false);
+    const [collectionName, setCollectionName] = useState('');
+    const folderRef = useRef<HTMLInputElement>(null);
+
+    const folderInfo = selectedFiles.length > 0 ? parseFolderStructure(selectedFiles) : null;
 
     useEffect(() => {
-        Promise.all([fetchUsers(), fetchSystemMetrics()])
-            .then(([u, m]) => { setUsers(u); setMetrics(m); })
-            .catch(() => {}).finally(() => setLoading(false));
-    }, []);
+        if (folderInfo?.collectionName && !collectionName) setCollectionName(folderInfo.collectionName);
+    }, [folderInfo?.collectionName]);
 
-    const onRoleChange = async (userId: number, role: string) => {
-        const updated = await changeUserRole(userId, role);
-        setUsers(users.map((u) => (u.id === userId ? updated : u)));
+    const addFiles = (files: FileList | File[]) => {
+        const arr = Array.from(files).filter((f) => /\.(jpe?g|png)$/i.test(f.name));
+        setSelectedFiles(arr);
     };
 
-    if (loading) return <LoadingState />;
+    const handleDrop = (e: React.DragEvent) => {
+        e.preventDefault();
+        setDragOver(false);
+        if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+    };
+
+    const handleUpload = async () => {
+        if (selectedFiles.length === 0) return;
+        setUploading(true);
+        setError(null);
+        try {
+            const res = await uploadBatch(selectedFiles, collectionName || undefined);
+            pollJob(res.job_id);
+        } catch (e: any) {
+            setError(e.message);
+            setUploading(false);
+        }
+    };
+
+    const pollJob = useCallback(async (jobId: number) => {
+        try {
+            const s = await fetchJobStatus(jobId);
+            setJob(s);
+            setUploading(false);
+            if (s.status === 'queued' || s.status === 'processing') {
+                setTimeout(() => pollJob(jobId), 2000);
+            }
+        } catch {
+            setUploading(false);
+        }
+    }, []);
 
     return (
         <>
-            <div className="page-header"><h2>Admin Panel</h2><p>System management and user administration</p></div>
-            {metrics && (
-                <div className="stats-grid">
-                    <StatCard icon="📷" value={fmt(metrics.total_images)} label="Images" />
-                    <StatCard icon="🔍" value={fmt(metrics.total_detections)} label="Detections" />
-                    <StatCard icon="👤" value={fmt(metrics.total_users)} label="Users" />
-                    <StatCard icon="⏳" value={fmt(metrics.pending_jobs)} label="Pending Jobs" />
-                    <StatCard icon="💾" value={`${metrics.db_size_mb} MB`} label="DB Size" />
-                    <StatCard icon="📁" value={`${metrics.storage_size_mb} MB`} label="Storage" />
-                </div>
-            )}
-            <div className="card">
-                <div className="card-header"><h3>Users</h3></div>
-                <div className="card-body">
-                    <div className="table-container">
-                        <table>
-                            <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Active</th><th>Action</th></tr></thead>
-                            <tbody>
-                                {users.map((u) => (
-                                    <tr key={u.id}>
-                                        <td>{u.email}</td>
-                                        <td>{u.full_name || '—'}</td>
-                                        <td><span className="tag tag-primary">{u.role}</span></td>
-                                        <td>{u.is_active ? '✅' : '❌'}</td>
-                                        <td>
-                                            <select className="filter-select" value={u.role} onChange={(e) => onRoleChange(u.id, e.target.value)} style={{ fontSize: '0.75rem' }}>
-                                                <option value="admin">admin</option><option value="researcher">researcher</option><option value="reviewer">reviewer</option>
-                                            </select>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+            <div className="page-header"><h2>Upload Images</h2><p>Select a collection folder containing camera trap subfolders.</p></div>
+
+            <div
+                className={`dropzone ${dragOver ? 'dragover' : ''}`}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+                onClick={() => folderRef.current?.click()}
+            >
+                <input
+                    ref={folderRef}
+                    type="file"
+                    multiple
+                    accept=".jpg,.jpeg,.png"
+                    style={{ display: 'none' }}
+                    {...({ webkitdirectory: '', directory: '' } as any)}
+                    onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }}
+                />
+                <div className="dropzone-icon">☁️</div>
+                <p className="dropzone-text">Drop folder here or click to browse</p>
+                <button type="button" className="btn btn-primary" onClick={(e) => { e.stopPropagation(); folderRef.current?.click(); }}>Choose Folder</button>
             </div>
 
-            <div className="card" style={{ marginTop: '1.5rem' }}>
-                <div className="card-header"><h3>Dataset Exports</h3></div>
-                <div className="card-body" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    <a href={getQuollExportUrl('csv')} className="btn btn-primary" download>Export Quoll Detections</a>
-                    <a href={getMetadataExportUrl('csv')} className="btn btn-outline" download>Export Full Metadata</a>
-                    <a href={getExportUrl('json')} className="btn btn-outline" download>Export Report JSON</a>
+            {folderInfo && selectedFiles.length > 0 && !job && (
+                <div className="upload-summary card">
+                    <div className="card-header"><h3>Folder Summary</h3></div>
+                    <div className="card-body">
+                        <input className="filter-select" style={{ width: '100%' }} value={collectionName} onChange={(e) => setCollectionName(e.target.value)} placeholder="Collection Name" />
+                        <div style={{ marginTop: '1rem' }}>{selectedFiles.length} images found in {folderInfo.cameras.size} cameras.</div>
+                        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem' }}>
+                            <button className="btn btn-primary" onClick={handleUpload} disabled={uploading}>{uploading ? 'Uploading...' : 'Upload & Process'}</button>
+                            <button className="btn btn-outline" onClick={() => setSelectedFiles([])}>Clear</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {job && (
+                <div className="upload-batch-progress card" style={{ marginTop: '2rem' }}>
+                    <div className="card-header"><h3>Processing Batch...</h3><span className={`tag tag-accent`}>{job.status}</span></div>
+                    <div className="card-body">
+                        <div className="progress-bar-bg"><div className="progress-bar-fill" style={{ width: `${job.percent}%` }} /></div>
+                        <div style={{ textAlign: 'right', fontSize: '0.8rem', marginTop: '0.5rem' }}>{job.percent.toFixed(1)}%</div>
+                    </div>
+                </div>
+            )}
+        </>
+    );
+}
+
+function Reports() {
+    const [report, setReport] = useState<ReportData | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => { fetchReport().then(setReport).catch((e) => setError(e.message)).finally(() => setLoading(false)); }, []);
+    if (loading) return <LoadingState />;
+    if (error) return <ErrorState message={error} />;
+    if (!report) return null;
+
+    return (
+        <>
+            <div className="page-header"><h2>Reports</h2><p>Data analytics and exports</p></div>
+            <div className="stats-grid">
+                <StatCard icon="📷" value={fmt(report.total_images)} label="Total Images" />
+                <StatCard icon="✅" value={fmt(report.processed_images)} label="Processed" />
+                <StatCard icon="🔍" value={fmt(report.total_detections)} label="Detections" />
+                <StatCard icon="🐾" value={fmt(report.quoll_detections)} label="Quolls" />
+            </div>
+            <div className="card" style={{ marginTop: '2rem' }}>
+                <div className="card-header"><h3>Exports</h3></div>
+                <div className="card-body" style={{ display: 'flex', gap: '1rem' }}>
+                    <a href={getExportUrl('csv')} className="btn btn-outline" download>Download CSV Report</a>
+                    <a href={getQuollExportUrl('csv')} className="btn btn-primary" download>Download Quoll Only CSV</a>
                 </div>
             </div>
         </>
     );
 }
 
-/* ============================================================
-   LOGIN PAGE
-   ============================================================ */
-function LoginPage() {
-    const { user, login } = useAuth();
-    const [tab, setTab] = useState<'login' | 'register'>('login');
-    const [email, setEmail] = useState('');
-    const [password, setPassword] = useState('');
-    const [fullName, setFullName] = useState('');
-    const [role, setRole] = useState('reviewer');
-    const [error, setError] = useState('');
-    const [loading, setLoading] = useState(false);
+function ImageReview() {
+    const params = useParams();
+    const id = parseInt(params.detectionId || '0');
+    const [det, setDet] = useState<DetectionDetail | null>(null);
+    const [anns, setAnns] = useState<AnnotationData[]>([]);
+    const [form, setForm] = useState({ is_correct: true, corrected_species: '', notes: '', individual_id: '', flag_for_retraining: false, bbox: undefined as any });
+    const [saving, setSaving] = useState(false);
+    const [loading, setLoading] = useState(true);
 
-    if (user) return <Navigate to="/" />;
+    useEffect(() => {
+        if (!id) return;
+        Promise.all([fetchDetectionDetail(id), fetchAnnotations(id)])
+            .then(([d, a]) => { setDet(d); setAnns(a); }).finally(() => setLoading(false));
+    }, [id]);
 
-    const handleLogin = async (e: React.FormEvent) => {
-        e.preventDefault(); setError(''); setLoading(true);
-        try { await login(email, password); } catch { setError('Invalid credentials'); }
-        setLoading(false);
-    };
-
-    const handleRegister = async (e: React.FormEvent) => {
-        e.preventDefault(); setError(''); setLoading(true);
+    const submit = async () => {
+        if (!det) return;
+        setSaving(true);
         try {
-            await register(email, password, fullName, role);
-            await login(email, password);
-        } catch (err: any) { setError(err.message); }
-        setLoading(false);
+            const ann = await createAnnotation({
+                detection_id: det.id,
+                is_correct: form.is_correct,
+                corrected_species: form.corrected_species || undefined,
+                notes: form.notes || undefined,
+                individual_id: form.individual_id || undefined,
+                flag_for_retraining: form.flag_for_retraining,
+            });
+            setAnns([ann, ...anns]);
+            setForm({ is_correct: true, corrected_species: '', notes: '', individual_id: '', flag_for_retraining: false, bbox: undefined });
+        } catch { }
+        setSaving(false);
     };
+
+    if (loading) return <LoadingState />;
+    if (!det) return <div className="empty-state"><h3>Detection not found</h3></div>;
 
     return (
-        <div style={{ maxWidth: 400, margin: '4rem auto' }}>
-            <div className="page-header" style={{ textAlign: 'center' }}><h2>🌿 Wildlife AI Platform</h2><p>Sign in to continue</p></div>
-            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
-                <button className={`btn ${tab === 'login' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setTab('login')} style={{ flex: 1 }}>Login</button>
-                <button className={`btn ${tab === 'register' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setTab('register')} style={{ flex: 1 }}>Register</button>
-            </div>
-            <div className="card">
-                <div className="card-body">
-                    <form onSubmit={tab === 'login' ? handleLogin : handleRegister}>
-                        {tab === 'register' && (
-                            <div style={{ marginBottom: '1rem' }}>
-                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Full Name</label>
-                                <input className="filter-select" style={{ width: '100%' }} value={fullName} onChange={(e) => setFullName(e.target.value)} />
-                            </div>
-                        )}
-                        <div style={{ marginBottom: '1rem' }}>
-                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Email</label>
-                            <input className="filter-select" style={{ width: '100%' }} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-                        </div>
-                        <div style={{ marginBottom: '1rem' }}>
-                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Password</label>
-                            <input className="filter-select" style={{ width: '100%' }} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} />
-                        </div>
-                        {tab === 'register' && (
-                            <div style={{ marginBottom: '1rem' }}>
-                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Role</label>
-                                <select className="filter-select" value={role} onChange={(e) => setRole(e.target.value)}>
-                                    <option value="reviewer">Reviewer</option><option value="researcher">Researcher</option><option value="admin">Admin</option>
-                                </select>
-                            </div>
-                        )}
-                        {error && <p style={{ color: 'var(--danger)', fontSize: '0.85rem', marginBottom: '0.5rem' }}>{error}</p>}
-                        <button className="btn btn-primary" type="submit" disabled={loading} style={{ width: '100%', justifyContent: 'center' }}>
-                            {loading ? 'Please wait...' : tab === 'login' ? 'Sign In' : 'Create Account'}
-                        </button>
-                    </form>
+        <>
+            <div className="page-header"><h2>Review Detection #{det.id}</h2></div>
+            <div className="chart-grid">
+                <div className="card">
+                    <div className="card-body" style={{ textAlign: 'center' }}>
+                        {det.crop_path && <img src={storageUrl(det.crop_path)} alt="crop" style={{ maxWidth: '100%', borderRadius: 8 }} />}
+                        <div style={{ marginTop: '1rem' }}><strong>Species:</strong> {det.species || 'Unknown'} ({Math.round(det.detection_confidence * 100)}%)</div>
+                    </div>
                 </div>
+                <div className="card">
+                    <div className="card-header"><h3>Annotate</h3></div>
+                    <div className="card-body">
+                        <select className="filter-select" style={{ width: '100%' }} value={String(form.is_correct)} onChange={(e) => setForm({ ...form, is_correct: e.target.value === 'true' })}>
+                            <option value="true">Correct</option><option value="false">Incorrect</option>
+                        </select>
+                        <input className="filter-select" style={{ width: '100%', marginTop: '1rem' }} value={form.individual_id} onChange={(e) => setForm({ ...form, individual_id: e.target.value })} placeholder="Individual ID" />
+                        <textarea className="filter-select" style={{ width: '100%', marginTop: '1rem', minHeight: 80 }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Notes" />
+                        <button className="btn btn-primary" style={{ marginTop: '1rem', width: '100%' }} onClick={submit} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
+                    </div>
+                </div>
+            </div>
+        </>
+    );
+}
+
+function ReviewImage() {
+    const { imageId } = useParams();
+    const id = parseInt(imageId || '0');
+    const [image, setImage] = useState<ImageData | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [step, setStep] = useState<'choose' | 'annotate' | 'done'>('choose');
+    const [bbox, setBbox] = useState<any>(null);
+    const [species, setSpecies] = useState('Spotted-tailed Quoll');
+    const [saving, setSaving] = useState(false);
+
+    useEffect(() => {
+        if (!id) return;
+        fetchImageDetail(id).then((data: any) => setImage(data)).catch(() => {}).finally(() => setLoading(false));
+    }, [id]);
+
+    const confirmEmpty = async () => {
+        if (!image) return;
+        setSaving(true);
+        try {
+            await createMissedDetection(image.id, { bbox_x: 0, bbox_y: 0, bbox_w: 0, bbox_h: 0, species: '__confirmed_empty__', flag_for_retraining: false });
+            setStep('done');
+        } catch { }
+        setSaving(false);
+    };
+
+    const submitAnimal = async () => {
+        if (!image || !bbox) return;
+        setSaving(true);
+        try {
+            await createMissedDetection(image.id, { bbox_x: bbox.x, bbox_y: bbox.y, bbox_w: bbox.w, bbox_h: bbox.h, species, flag_for_retraining: true });
+            setStep('done');
+        } catch { }
+        setSaving(false);
+    };
+
+    if (loading) return <LoadingState />;
+    if (!image) return <div className="empty-state"><h3>Image not found</h3></div>;
+    if (step === 'done') return <div className="empty-state"><h3>Review Saved!</h3><Link to="/admin" className="btn btn-primary">Return to Admin</Link></div>;
+
+    return (
+        <div className="review-image-layout card">
+            <div className="card-body" style={{ textAlign: 'center' }}>
+                {step === 'choose' ? (
+                    <>
+                        <img src={storageUrl(image.file_path)} alt="review" style={{ maxWidth: '100%', borderRadius: 8 }} />
+                        <div style={{ marginTop: '2rem', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+                            <button className="btn btn-outline" onClick={confirmEmpty}>Mark as Empty</button>
+                            <button className="btn btn-primary" onClick={() => setStep('annotate')}>Found Animal</button>
+                        </div>
+                    </>
+                ) : (
+                    <>
+                        <BboxDrawer imageUrl={storageUrl(image.file_path)} onDraw={setBbox} />
+                        <div style={{ marginTop: '2rem' }}>
+                            <select className="filter-select" value={species} onChange={(e) => setSpecies(e.target.value)}>
+                                <option>Spotted-tailed Quoll</option><option>Kangaroo</option><option>Wombat</option>
+                            </select>
+                            <button className="btn btn-primary" style={{ marginLeft: '1rem' }} onClick={submitAnimal} disabled={!bbox || saving}>Save Observation</button>
+                        </div>
+                    </>
+                )}
             </div>
         </div>
     );
 }
 
-/* ============================================================
-   SHARED COMPONENTS
-   ============================================================ */
+function BboxDrawer({ imageUrl, onDraw }: { imageUrl: string; onDraw: (bbox: any) => void }) {
+    const imgRef = useRef<HTMLImageElement>(null);
+    const [box, setBox] = useState<any>(null);
+
+    const handleDown = (e: any) => {
+        const rect = imgRef.current!.getBoundingClientRect();
+        setBox({ x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height, w: 0, h: 0 });
+    };
+
+    const handleUp = (e: any) => {
+        if (!box) return;
+        const rect = imgRef.current!.getBoundingClientRect();
+        const endX = (e.clientX - rect.left) / rect.width;
+        const endY = (e.clientY - rect.top) / rect.height;
+        const finalBox = { x: Math.min(box.x, endX), y: Math.min(box.y, endY), w: Math.abs(endX - box.x), h: Math.abs(endY - box.y) };
+        setBox(finalBox);
+        onDraw(finalBox);
+    };
+
+    return (
+        <div style={{ position: 'relative', display: 'inline-block', cursor: 'crosshair' }} onPointerDown={handleDown} onPointerUp={handleUp}>
+            <img ref={imgRef} src={imageUrl} alt="draw" style={{ maxWidth: '100%', borderRadius: 8 }} draggable={false} />
+            {box && <div style={{ position: 'absolute', border: '3px solid #10b981', background: 'rgba(16,185,129,0.2)', left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%` }} />}
+        </div>
+    );
+}
+
+function LoginPage() {
+    const { login } = useAuth();
+    const [email, setEmail] = useState('');
+    const [pass, setPass] = useState('');
+    const submit = (e: any) => { e.preventDefault(); login(email, pass); };
+    return (
+        <div style={{ maxWidth: 400, margin: '100px auto' }} className="card">
+            <form className="card-body" onSubmit={submit}>
+                <h3>Login</h3>
+                <input className="filter-select" style={{ width: '100%', marginTop: '1rem' }} placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} />
+                <input className="filter-select" style={{ width: '100%', marginTop: '1rem' }} type="password" placeholder="Password" value={pass} onChange={e => setPass(e.target.value)} />
+                <button className="btn btn-primary" style={{ width: '100%', marginTop: '2rem' }}>Sign In</button>
+            </form>
+        </div>
+    );
+}
+
+function ReviewEmptyImage() { return <Navigate to="/" />; }
+
 function StatCard({ icon, value, label }: { icon: string; value: string; label: string }) {
     return <div className="stat-card"><div className="stat-icon">{icon}</div><div className="stat-value">{value}</div><div className="stat-label">{label}</div></div>;
 }
 
-function LoadingState() {
-    return <div className="loading-container"><div className="spinner" /><span>Loading...</span></div>;
-}
-
-function ErrorState({ message }: { message: string }) {
-    return <div className="empty-state"><div className="icon">⚠️</div><h3>Connection Error</h3><p>{message}</p></div>;
-}
-
-function EmptyMsg({ text }: { text: string }) {
-    return <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '2rem' }}>{text}</div>;
-}
-
-function fmt(n: number): string {
-    return n.toLocaleString();
-}
+function LoadingState() { return <div className="loading-container"><div className="spinner" /><span>Loading Wildlife Tracker...</span></div>; }
+function ErrorState({ message }: { message: string }) { return <div className="empty-state"><h3>Connection Error</h3><p>{message}</p></div>; }
+function fmt(n: number): string { return n.toLocaleString(); }
 
 export default App;
