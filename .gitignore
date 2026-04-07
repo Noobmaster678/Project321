@@ -4,6 +4,9 @@ storage/
 ml_models/
 exports/
 
+# Accidental bulk archives (do not commit)
+backend.zip
+
 # Python
 __pycache__/
 *.py[cod]

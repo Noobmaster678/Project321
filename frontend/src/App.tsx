@@ -16,6 +16,7 @@ import {
     type ReviewQueueCounts,
 } from './api';
 import './index.css';
+import AdminPage from './AdminPage';
 
 /* Fix Leaflet default icon paths */
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -99,6 +100,7 @@ function HomeHeader() {
         { path: '/pending-review', label: 'Pending Review' },
         { path: '/reports', label: 'Reports' },
         { path: '/help', label: 'Help' },
+        ...(user?.role === 'admin' ? [{ path: '/admin', label: 'Admin' } as const] : []),
     ];
 
     return (
@@ -112,7 +114,7 @@ function HomeHeader() {
                     <Link
                         key={item.path}
                         to={item.path}
-                        className={`nav-link ${loc.pathname === item.path || (item.path === '/pending-review' && loc.pathname.startsWith('/review')) ? 'active' : ''}`}
+                        className={`nav-link ${loc.pathname === item.path || (item.path === '/pending-review' && loc.pathname.startsWith('/review')) || (item.path === '/admin' && loc.pathname.startsWith('/admin')) ? 'active' : ''}`}
                     >
                         {item.label}
                     </Link>
@@ -2219,6 +2221,7 @@ function AdminPanel() {
 
     return (
         <>
+            <AdminPage embedded />
             <div className="page-header"><h2>Admin Panel</h2><p>System management and user administration</p></div>
             {metrics && (
                 <div className="stats-grid">

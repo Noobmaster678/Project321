@@ -271,3 +271,33 @@ async def activate_model_version(
     await db.flush()
     await db.refresh(mv)
     return ModelVersionOut.model_validate(mv)
+
+
+@router.get("/dashboard-stats")
+async def get_dashboard_stats(
+    _admin: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Combined stats + placeholder cards for the admin dashboard UI (mirrors AdminPage.tsx)."""
+    total_images = (await db.execute(select(func.count(Image.id)))).scalar() or 0
+    total_users = (await db.execute(select(func.count(User.id)))).scalar() or 0
+    pending_jobs = (await db.execute(
+        select(func.count(ProcessingJob.id)).where(ProcessingJob.status.in_(["queued", "processing"]))
+    )).scalar() or 0
+
+    return {
+        "stats": [
+            {"label": "Total images", "value": f"{total_images:,}", "color": "green"},
+            {"label": "Total users", "value": f"{total_users:,}", "color": "green"},
+            {"label": "Jobs in queue / processing", "value": f"{pending_jobs:,}", "color": "yellow"},
+            {"label": "Unresolved issues (placeholder)", "value": "—", "color": "red"},
+        ],
+        "recent_sightings": [
+            {"id": "#S-1042", "tag": "98% Confidence", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+1"},
+            {"id": "#S-902", "tag": "Conflict", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+2"},
+            {"id": "#S-1209", "tag": "New Individual", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+3"},
+            {"id": "#S-3008", "tag": "No Animal", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+4"},
+            {"id": "#S-523", "tag": "Vulnerable", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+5"},
+            {"id": "#S-1337", "tag": "Verified", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+6"},
+        ],
+    }
