@@ -55,6 +55,9 @@ export interface ImageData {
     processed: boolean;
     has_animal: boolean | null;
     thumbnail_path: string | null;
+    event_id: number | null;
+    temperature_c: number | null;
+    trigger_mode: string | null;
 }
 
 export interface Detection {
@@ -70,7 +73,16 @@ export interface Detection {
     classification_confidence: number | null;
     model_version: string | null;
     crop_path: string | null;
+    review_status: string | null;
     created_at: string | null;
+}
+
+export interface ReviewQueueCounts {
+    verify_quolls: number;
+    low_confidence: number;
+    empty_check: number;
+    assign_individual: number;
+    total_pending: number;
 }
 
 export interface DetectionDetail extends Detection {
@@ -158,6 +170,8 @@ export interface ReportData {
     species_distribution: { species: string; count: number }[];
     camera_counts: { camera: string; detections: number }[];
     hourly_activity: { hour: number; detections: number }[];
+    rai_data: { species: string; independent_events: number; total_trap_nights: number; rai: number }[];
+    total_trap_nights: number;
 }
 
 // ---- Auth -----------------------------------------------------------------
@@ -304,16 +318,32 @@ export async function fetchJobStatus(jobId: number): Promise<JobStatus> {
 // ---- Detections -----------------------------------------------------------
 
 export async function fetchDetections(params: {
-    page?: number; per_page?: number; species?: string; min_confidence?: number; image_id?: number;
+    page?: number; per_page?: number; species?: string; min_confidence?: number;
+    max_confidence?: number; image_id?: number; camera_id?: number;
+    collection_id?: number; date_from?: string; date_to?: string;
+    review_status?: string; category?: string;
 }): Promise<PaginatedResponse<Detection>> {
     const sp = new URLSearchParams();
     if (params.page) sp.set('page', String(params.page));
     if (params.per_page) sp.set('per_page', String(params.per_page));
     if (params.species) sp.set('species', params.species);
-    if (params.min_confidence) sp.set('min_confidence', String(params.min_confidence));
+    if (params.min_confidence !== undefined) sp.set('min_confidence', String(params.min_confidence));
+    if (params.max_confidence !== undefined) sp.set('max_confidence', String(params.max_confidence));
     if (params.image_id) sp.set('image_id', String(params.image_id));
+    if (params.camera_id !== undefined) sp.set('camera_id', String(params.camera_id));
+    if (params.collection_id !== undefined) sp.set('collection_id', String(params.collection_id));
+    if (params.date_from) sp.set('date_from', params.date_from);
+    if (params.date_to) sp.set('date_to', params.date_to);
+    if (params.review_status) sp.set('review_status', params.review_status);
+    if (params.category) sp.set('category', params.category);
     const res = await fetch(`${API_BASE}/detections/?${sp}`);
     if (!res.ok) throw new Error('Failed to fetch detections');
+    return res.json();
+}
+
+export async function fetchReviewQueue(): Promise<ReviewQueueCounts> {
+    const res = await fetch(`${API_BASE}/detections/review-queue`);
+    if (!res.ok) throw new Error('Failed to fetch review queue');
     return res.json();
 }
 

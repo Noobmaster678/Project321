@@ -12,7 +12,8 @@ from backend.app.db.base import Base
 
 # Import all models so they register with Base.metadata
 from backend.app.models import (  # noqa: F401
-    camera, collection, image, detection, annotation, individual, sighting, missed_correction,
+    camera, collection, image, detection, annotation, individual, sighting,
+    missed_correction, deployment, model_version,
 )
 from backend.app.models import user, job  # noqa: F401
 

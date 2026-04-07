@@ -12,17 +12,18 @@ class Settings(BaseSettings):
 
     # --- Project Paths ---
     PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent
-    DATASET_ROOT: Path = Path(r"I:/AA-Study/Project321/dataset")
-    STORAGE_ROOT: Path = Path(r"I:/AA-Study/Project321/storage")
+    DATASET_ROOT: Path = PROJECT_ROOT / "dataset"
+    STORAGE_ROOT: Path = PROJECT_ROOT / "storage"
 
     # --- Database ---
     DATABASE_URL: str = "sqlite+aiosqlite:///./wildlife.db"  # SQLite for dev
     # DATABASE_URL: str = "postgresql+asyncpg://user:pass@localhost/wildlife"  # Postgres for prod
 
     # --- ML Models (stored outside project dir, not version-controlled) ---
-    MEGADETECTOR_MODEL_PATH: Path = Path(r"C:/Users/Admin/ml_models/megadetector/md_v5a.0.0.pt")
-    AWC135_MODEL_PATH: Path = Path(r"C:/Users/Admin/ml_models/awc135/awc-135-v1.pth")
-    AWC135_LABELS_PATH: Path = Path(r"C:/Users/Admin/ml_models/awc135/labels.txt")
+    # --- ML Models (stored outside project dir, not version-controlled) ---
+    MEGADETECTOR_MODEL_PATH: Path = Path(r"C:/Users/Leroy/Desktop/ml_models/megadetector/md_v5a.0.0.pt")
+    AWC135_MODEL_PATH: Path = Path(r"C:/Users/Leroy/Desktop/ml_models/awc135/awc-135-v1.pth")
+    AWC135_LABELS_PATH: Path = Path(r"C:/Users/Leroy/Desktop/ml_models/awc135/labels.txt")
     AWC135_CLASSIFIER_BASE: str = "tf_efficientnet_b5.ns_jft_in1k"
 
     # --- Detection Thresholds ---

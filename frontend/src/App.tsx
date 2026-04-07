@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, useParams, Navigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, CartesianGrid } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import L from 'leaflet';
 import { AuthProvider, useAuth } from './auth';
 import {
@@ -9,12 +9,14 @@ import {
     fetchSpeciesCounts, fetchReport, fetchDetectionDetail, fetchAnnotations, fetchDetections,
     createAnnotation, uploadBatch, fetchJobStatus, fetchUsers, changeUserRole,
     fetchSystemMetrics, register, getExportUrl, getQuollExportUrl, getMetadataExportUrl, fetchImagesBySpecies, fetchImageDetail,
-    storageUrl, createMissedDetection,
+    storageUrl, createMissedDetection, fetchReviewQueue,
     type DashboardStats, type ImageData, type IndividualData, type CollectionStat,
     type CameraStat, type SpeciesCount, type PaginatedResponse, type ReportData,
     type DetectionDetail, type AnnotationData, type JobStatus, type UserData, type Detection,
+    type ReviewQueueCounts,
 } from './api';
 import './index.css';
+import AdminPage from './AdminPage';
 
 /* Fix Leaflet default icon paths */
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -25,6 +27,15 @@ L.Icon.Default.mergeOptions({
 });
 
 const CHART_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+
+/** Show Camera / Filename instead of just filename to disambiguate Reconyx images */
+function displayImageName(img: { filename: string; file_path: string }): string {
+    if (!img.file_path) return img.filename;
+    const parts = img.file_path.replace(/\\/g, '/').split('/');
+    if (parts.length >= 3) return parts.slice(-2).join(' / ');
+    if (parts.length === 2) return parts.join(' / ');
+    return img.filename;
+}
 
 function App() {
     return (
@@ -59,10 +70,7 @@ function AppShell() {
                     <Route path="/review/:detectionId" element={<RequireAuth><ImageReview /></RequireAuth>} />
                     <Route path="/review-empty/:imageId" element={<RequireAuth><ReviewEmptyImage /></RequireAuth>} />
                     <Route path="/review-image/:imageId" element={<RequireAuth><ReviewImage /></RequireAuth>} />
-                    
-                    {/* NEW ADMIN ROUTE ADDED HERE */}
-                    <Route path="/admin" element={<RequireAuth role="admin"><AdminDashboard /></RequireAuth>} />
-                    
+                    <Route path="/admin" element={<RequireAuth role="admin"><AdminPanel /></RequireAuth>} />
                     <Route path="/login" element={<LoginPage />} />
                     <Route path="*" element={<Navigate to="/" />} />
                 </Routes>
@@ -80,7 +88,7 @@ function RequireAuth({ children, role }: { children: React.ReactNode; role?: str
 }
 
 /* ============================================================
-    HEADER 
+   HEADER (WildlifeTracker approved design)
    ============================================================ */
 function HomeHeader() {
     const loc = useLocation();
@@ -92,7 +100,7 @@ function HomeHeader() {
         { path: '/pending-review', label: 'Pending Review' },
         { path: '/reports', label: 'Reports' },
         { path: '/help', label: 'Help' },
-        { path: '/admin', label: 'Admin' }, // Added Admin to Nav
+        ...(user?.role === 'admin' ? [{ path: '/admin', label: 'Admin' } as const] : []),
     ];
 
     return (
@@ -106,7 +114,7 @@ function HomeHeader() {
                     <Link
                         key={item.path}
                         to={item.path}
-                        className={`nav-link ${loc.pathname === item.path || (item.path === '/pending-review' && loc.pathname.startsWith('/review')) ? 'active' : ''}`}
+                        className={`nav-link ${loc.pathname === item.path || (item.path === '/pending-review' && loc.pathname.startsWith('/review')) || (item.path === '/admin' && loc.pathname.startsWith('/admin')) ? 'active' : ''}`}
                     >
                         {item.label}
                     </Link>
@@ -135,174 +143,15 @@ function HomeHeader() {
 
 function LeafLogo() {
     return (
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden style={{width: 24, height: 24, marginRight: 8}}>
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
             <path d="M17 8C8 10 5.9 16.17 3.82 21.34L5.71 22L6.66 19.7C7.14 18.66 7.5 17.59 7.77 16.5C8.5 18 9.5 19.5 10.5 20.5C11.5 21.5 13 22 15 22C19 22 22 19 22 15C22 12 20.5 9.5 18 8C17 8 17 8 17 8Z" />
         </svg>
     );
 }
 
 /* ============================================================
-    ADMIN DASHBOARD COMPONENT 
+   FOOTER (WildlifeTracker approved design)
    ============================================================ */
-function AdminDashboard() {
-    const [data, setData] = useState<any>(null);
-    const [error, setError] = useState<string | null>(null);
-
-    useEffect(() => {
-        fetch('http://localhost:8000/api/admin/dashboard-stats')
-            .then(res => {
-                if (!res.ok) throw new Error("Could not connect to backend");
-                return res.json();
-            })
-            .then(setData)
-            .catch(err => setError(err.message));
-    }, []);
-
-    if (error) return <ErrorState message={error} />;
-    if (!data) return <LoadingState />;
-
-    const accuracyData = [
-        { month: 'Jan', acc: 5 }, { month: '2y', acc: 60 }, 
-        { month: '5', acc: 45 }, { month: '30', acc: 65 }, 
-        { month: 'Der', acc: 80 }, { month: '100', acc: 88 }
-    ];
-
-    const pieData = [
-        { name: 'Positive', value: 72 }, { name: 'Unverified', value: 28 }
-    ];
-
-    const userActivity = [
-        { name: 'Normal User', value: 30 }, 
-        { name: 'Camera Traps', value: 20 }, 
-        { name: 'UOW Ecologist', value: 40 },
-        { name: 'Other', value: 10 }
-    ];
-
-    return (
-        <div className="admin-dashboard-page">
-            <style>{adminStyles}</style>
-            <div className="search-container">
-                <input type="text" className="search-bar" placeholder="Search sightings, IDs, or locations..." />
-            </div>
-
-            <section className="admin-section">
-                <h3 className="section-title">Activity</h3>
-                <div className="activity-stats-grid">
-                    {data.stats.map((s: any, i: number) => (
-                        <div key={i} className={`admin-stat-card border-${s.color}`}>
-                            <div className={`status-dot dot-${s.color}`}></div>
-                            <h2 className="admin-stat-value">{s.value}</h2>
-                            <p className="admin-stat-label">{s.label}</p>
-                        </div>
-                    ))}
-                </div>
-            </section>
-
-            <section className="admin-section">
-                <h3 className="section-title">Recent Sighting</h3>
-                <div className="recent-sightings-grid">
-                    {data.recent_sightings.map((s: any) => (
-                        <div key={s.id} className="admin-quoll-card">
-                            <div className="admin-img-wrap">
-                                <img src={s.img} alt="Quoll" />
-                                <span className="conf-badge">{s.tag}</span>
-                            </div>
-                            <div className="admin-card-meta">
-                                <span className="sighting-id">{s.id}</span>
-                                <span className="version-tag">v.1.0</span>
-                            </div>
-                            <Link to={`/review-image/${s.id.replace('#', '')}`} className="admin-review-btn">Review</Link>
-                        </div>
-                    ))}
-                </div>
-                <button className="admin-show-more">Show More</button>
-            </section>
-
-            <section className="admin-section">
-                <h3 className="section-title">Analytics</h3>
-                <div className="analytics-layout">
-                    <div className="admin-chart-card">
-                        <h4>Identification Accuracy Trend</h4>
-                        <div style={{ height: 200 }}>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <LineChart data={accuracyData}>
-                                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{fontSize: 10}} />
-                                    <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10}} />
-                                    <Tooltip />
-                                    <Line type="monotone" dataKey="acc" stroke="#2d6a4f" strokeWidth={3} dot={{ r: 4, fill: '#2d6a4f' }} />
-                                </LineChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-                    <div className="admin-chart-card">
-                        <h4>Positive vs Unverified Identifications</h4>
-                        <div style={{ height: 200, position: 'relative' }}>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <PieChart>
-                                    <Pie data={pieData} innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                                        <Cell fill="#2d6a4f" />
-                                        <Cell fill="#e0e0e0" />
-                                    </Pie>
-                                    <Tooltip />
-                                </PieChart>
-                            </ResponsiveContainer>
-                            <div className="chart-overlay-text">72%</div>
-                        </div>
-                    </div>
-                    <div className="admin-chart-card span-full">
-                        <h4>User Activity Distribution</h4>
-                        <div style={{ height: 250 }}>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <PieChart>
-                                    <Pie data={userActivity} cx="50%" cy="50%" outerRadius={100} fill="#8884d8" dataKey="value" label={({name, value}) => `${name} ${value}%`}>
-                                        {userActivity.map((entry, index) => (
-                                            <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                                        ))}
-                                    </Pie>
-                                    <Tooltip />
-                                </PieChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-                </div>
-            </section>
-        </div>
-    );
-}
-
-const adminStyles = `
-    .admin-dashboard-page { padding: 20px; max-width: 1200px; margin: auto; }
-    .search-container { text-align: center; margin-bottom: 30px; }
-    .search-bar { width: 60%; padding: 12px 25px; border-radius: 25px; border: 1px solid #ddd; background: #fcfcfc; outline: none; }
-    .admin-section { margin-bottom: 45px; }
-    .section-title { font-size: 20px; font-weight: 600; margin-bottom: 20px; color: #333; }
-    .activity-stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
-    .admin-stat-card { background: white; padding: 25px 20px; border-radius: 12px; border: 1px solid #eee; position: relative; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
-    .border-green { border-top: 5px solid #2d6a4f; }
-    .border-yellow { border-top: 5px solid #ffb703; }
-    .border-red { border-top: 5px solid #e63946; }
-    .admin-stat-value { font-size: 28px; margin: 0; color: #222; }
-    .admin-stat-label { font-size: 11px; color: #888; margin: 5px 0 0; }
-    .status-dot { position: absolute; top: 15px; right: 15px; width: 8px; height: 8px; border-radius: 50%; }
-    .dot-green { background: #2d6a4f; } .dot-yellow { background: #ffb703; } .dot-red { background: #e63946; }
-    .recent-sightings-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-    .admin-quoll-card { background: white; border: 1px solid #eee; border-radius: 10px; padding: 12px; }
-    .admin-img-wrap { position: relative; width: 100%; height: 180px; overflow: hidden; border-radius: 6px; }
-    .admin-img-wrap img { width: 100%; height: 100%; object-fit: cover; }
-    .conf-badge { position: absolute; top: 8px; left: 8px; background: rgba(45,106,79,0.85); color: white; padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; }
-    .admin-card-meta { display: flex; justify-content: space-between; margin-top: 10px; font-size: 12px; color: #aaa; }
-    .admin-review-btn { display: block; background: #2d6a4f; color: white; text-align: center; text-decoration: none; padding: 10px; border-radius: 6px; margin-top: 12px; font-weight: 600; font-size: 13px; }
-    .admin-show-more { width: 100%; background: #2d6a4f; color: white; border: none; padding: 15px; border-radius: 8px; margin-top: 25px; font-weight: bold; cursor: pointer; }
-    .analytics-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; }
-    .admin-chart-card { background: #fff; border: 1px solid #eee; border-radius: 12px; padding: 20px; position: relative; }
-    .admin-chart-card h4 { margin: 0 0 20px; font-size: 14px; color: #444; }
-    .span-full { grid-column: span 2; }
-    .chart-overlay-text { position: absolute; top: 55%; left: 50%; transform: translate(-50%, -50%); font-size: 24px; font-weight: bold; color: #2d6a4f; }
-`;
-
-
-
 function Footer() {
     return (
         <footer className="site-footer">
@@ -332,11 +181,14 @@ function Footer() {
                     </div>
                 </div>
             </div>
-            <div className="footer-bottom">© 2026 WildlifeTracker. All rights reserved.</div>
+            <div className="footer-bottom">© 2025 WildlifeTracker. All rights reserved.</div>
         </footer>
     );
 }
 
+/* ============================================================
+   HELP (placeholder)
+   ============================================================ */
 function HelpPage() {
     return (
         <div className="page-header">
@@ -346,53 +198,74 @@ function HelpPage() {
     );
 }
 
+/* ============================================================
+   PENDING REVIEW (design: metrics, category cards, review list)
+   ============================================================ */
 function PendingReviewPage() {
-    const [stats, setStats] = useState<DashboardStats | null>(null);
-    const [report, setReport] = useState<ReportData | null>(null);
-    const [detections, setDetections] = useState<Detection[]>([]);
-    const [emptyImages, setEmptyImages] = useState<PaginatedResponse<ImageData> | null>(null);
+    const [queue, setQueue] = useState<ReviewQueueCounts | null>(null);
+    const [cameras, setCameras] = useState<CameraStat[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [filter, setFilter] = useState<string | null>(null);
-    const [search, setSearch] = useState('');
-    const [focusSpecies, setFocusSpecies] = useState<'quoll' | 'all'>('quoll');
+    const [filterDetections, setFilterDetections] = useState<Detection[]>([]);
+    const [filterImages, setFilterImages] = useState<PaginatedResponse<ImageData> | null>(null);
+    const [filterLoading, setFilterLoading] = useState(false);
+    const [filterPage, setFilterPage] = useState(1);
+    const [reviewIdx, setReviewIdx] = useState(0);
+    const [sessionStart] = useState(Date.now());
+    const [reviewed, setReviewed] = useState(0);
+    const [cameraFilter, setCameraFilter] = useState<number | undefined>(undefined);
+    const [dateFrom, setDateFrom] = useState('');
+    const [dateTo, setDateTo] = useState('');
 
     useEffect(() => {
-        let alive = true;
-        const load = async () => {
-            setLoading(true);
-            try {
-                const [s, r, detRes, emptyRes] = await Promise.all([
-                    fetchStats(),
-                    fetchReport(),
-                    fetchDetections({ per_page: 200, min_confidence: 0 }),
-                    fetchImages({ has_animal: false, per_page: 50 }),
-                ]);
-                if (!alive) return;
-                setStats(s);
-                setReport(r);
-                setDetections(detRes.items || []);
-                setEmptyImages(emptyRes);
-                setError(null);
-            } catch (e: any) {
-                setError(e.message);
-            } finally {
-                if (alive) setLoading(false);
+        Promise.all([fetchReviewQueue(), fetchCameraStats()])
+            .then(([q, c]) => { setQueue(q); setCameras(c); })
+            .catch((e: any) => setError(e.message))
+            .finally(() => setLoading(false));
+    }, [reviewed]);
+
+    const loadCategory = async (cat: string, page = 1) => {
+        setFilterLoading(true);
+        setFilterPage(page);
+        setReviewIdx(0);
+        try {
+            if (cat === 'verify-quolls') {
+                const res = await fetchDetections({ species: 'quoll', review_status: 'unreviewed', per_page: 50, page, camera_id: cameraFilter, date_from: dateFrom || undefined, date_to: dateTo || undefined });
+                setFilterDetections(res.items);
+            } else if (cat === 'low-confidence') {
+                const res = await fetchDetections({ max_confidence: 0.5, review_status: 'unreviewed', per_page: 50, page, category: 'animal', camera_id: cameraFilter, date_from: dateFrom || undefined, date_to: dateTo || undefined });
+                setFilterDetections(res.items);
+            } else if (cat === 'empty-check') {
+                const res = await fetchImages({ has_animal: false, per_page: 50, page, camera_id: cameraFilter });
+                setFilterImages(res);
+            } else if (cat === 'assign-individual') {
+                const res = await fetchDetections({ species: 'quoll', review_status: 'verified', per_page: 50, page, camera_id: cameraFilter });
+                setFilterDetections(res.items);
             }
-        };
-        load();
-    }, []);
-
-    const lowConf = detections.filter((d) => (d.detection_confidence < 0.7) || (d.classification_confidence != null && d.classification_confidence < 0.7));
-    const highConf = detections.filter((d) => d.detection_confidence >= 0.7 && (d.classification_confidence == null || d.classification_confidence >= 0.7));
-    const noAnimalCount = emptyImages?.total ?? report?.empty_images ?? 0;
-
-    const metrics = {
-        lowConf: lowConf.length,
-        conflict: 0,
-        noAnimal: noAnimalCount,
-        newIndividual: Math.min(highConf.length, 50),
+        } catch { }
+        setFilterLoading(false);
     };
+
+    const openCategory = (cat: string) => {
+        setFilter(cat);
+        setFilterDetections([]);
+        setFilterImages(null);
+        loadCategory(cat);
+    };
+
+    // Keyboard shortcuts for review mode
+    useEffect(() => {
+        if (!filter || filter === 'empty-check') return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'ArrowRight' || e.key === 's') setReviewIdx((i) => Math.min(i + 1, filterDetections.length - 1));
+            if (e.key === 'ArrowLeft') setReviewIdx((i) => Math.max(i - 1, 0));
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    });
+
+    const sessionMinutes = Math.floor((Date.now() - sessionStart) / 60000);
 
     if (loading) return <LoadingState />;
     if (error) return <ErrorState message={error} />;
@@ -406,120 +279,285 @@ function PendingReviewPage() {
             </nav>
             <div className="page-header">
                 <h1 className="pending-review-title">Pending Reviews for Verification</h1>
-                <p className="pending-review-subtitle">Review and verify AI-detected images for Spotted-tail Quolls.</p>
+                <p className="pending-review-subtitle">Review and verify AI-detected images. Keyboard: arrow keys to navigate, Y/N for quick review.</p>
             </div>
 
             <div className="review-metrics">
-                <div className="review-metric-card warning">
-                    <span className="dot yellow" /><span className="icon">⚠</span>
-                    <div><strong>{fmt(metrics.lowConf)}</strong> Low Confidence Identifications</div>
+                <div className="review-metric-card success" style={{ cursor: 'pointer' }} onClick={() => openCategory('verify-quolls')}>
+                    <span className="dot green" /><span className="icon">Q</span>
+                    <div><strong>{fmt(queue?.verify_quolls ?? 0)}</strong> Verify Quoll Detections</div>
                 </div>
-                <div className="review-metric-card danger">
-                    <span className="dot red" /><span className="icon">✕</span>
-                    <div><strong>{fmt(metrics.conflict)}</strong> Conflict Detections</div>
+                <div className="review-metric-card warning" style={{ cursor: 'pointer' }} onClick={() => openCategory('low-confidence')}>
+                    <span className="dot yellow" /><span className="icon">?</span>
+                    <div><strong>{fmt(queue?.low_confidence ?? 0)}</strong> Low Confidence</div>
                 </div>
-                <div className="review-metric-card muted">
-                    <span className="dot gray" /><span className="icon">↻</span>
-                    <div><strong>{fmt(metrics.noAnimal)}</strong> No Animal Detected</div>
+                <div className="review-metric-card muted" style={{ cursor: 'pointer' }} onClick={() => openCategory('empty-check')}>
+                    <span className="dot gray" /><span className="icon">~</span>
+                    <div><strong>{fmt(queue?.empty_check ?? 0)}</strong> Check Empty Images</div>
                 </div>
-                <div className="review-metric-card success">
-                    <span className="dot green" /><span className="icon">+</span>
-                    <div><strong>{fmt(metrics.newIndividual)}</strong> New Individuals Potential</div>
+                <div className="review-metric-card" style={{ cursor: 'pointer', borderLeft: '4px solid var(--accent)' }} onClick={() => openCategory('assign-individual')}>
+                    <span className="dot" style={{ background: 'var(--accent)' }} /><span className="icon">ID</span>
+                    <div><strong>{fmt(queue?.assign_individual ?? 0)}</strong> Assign Individual IDs</div>
                 </div>
             </div>
 
+            {/* Session progress bar */}
+            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '1rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                <span>Reviewed: <strong>{reviewed}</strong></span>
+                <span>Session: <strong>{sessionMinutes}min</strong></span>
+                <span>Pending: <strong>{fmt(queue?.total_pending ?? 0)}</strong></span>
+            </div>
+
+            {/* Filter toolbar */}
             <div className="review-toolbar">
-                <input type="search" className="review-search" placeholder="Search by filename, camera trap, or date" value={search} onChange={(e) => setSearch(e.target.value)} />
-                <select className="filter-select"><option>Spotted-tail Quoll</option><option>All Species</option></select>
-                <select className="filter-select"><option>Date Range</option></select>
-                <select className="filter-select"><option>Camera Location</option></select>
-                <select className="filter-select"><option>Sort by Date</option></select>
+                <select className="filter-select" value={cameraFilter ?? ''} onChange={(e) => { setCameraFilter(e.target.value ? Number(e.target.value) : undefined); }}>
+                    <option value="">All Cameras</option>
+                    {cameras.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <input type="date" className="filter-select" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} title="Date from" />
+                <input type="date" className="filter-select" value={dateTo} onChange={(e) => setDateTo(e.target.value)} title="Date to" />
+                {filter && <button className="btn btn-outline" onClick={() => loadCategory(filter)}>Apply filters</button>}
             </div>
 
             {!filter ? (
                 <div className="review-category-grid">
-                    <ReviewCategoryCard title="Low confidence" tag={`${lowConf.length > 0 ? Math.round((lowConf[0].detection_confidence || 0) * 100) : 0}% - Low Confidence`} tagClass="warning" imageCount={lowConf.length} onReview={() => setFilter('low-confidence')} />
-                    <ReviewCategoryCard title="Conflict" tag="Conflict" tagClass="danger" imageCount={metrics.conflict} onReview={() => setFilter('conflict')} />
-                    <ReviewCategoryCard title="New Individual" tag="89% - High" tagClass="success" imageCount={metrics.newIndividual} onReview={() => setFilter('new-individual')} />
-                    <ReviewCategoryCard title="No Animal (Miss fire)" tag="No Detection" tagClass="muted" imageCount={metrics.noAnimal} onReview={() => setFilter('no-animal')} />
+                    <ReviewCategoryCard title="Verify Quoll Detections" description="Confirm or correct quoll identifications" tagClass="success" imageCount={queue?.verify_quolls ?? 0} onReview={() => openCategory('verify-quolls')} />
+                    <ReviewCategoryCard title="Low Confidence" description="Detections where the model was uncertain" tagClass="warning" imageCount={queue?.low_confidence ?? 0} onReview={() => openCategory('low-confidence')} />
+                    <ReviewCategoryCard title="Check Empty Images" description="Spot-check images marked as empty for missed animals" tagClass="muted" imageCount={queue?.empty_check ?? 0} onReview={() => openCategory('empty-check')} />
+                    <ReviewCategoryCard title="Assign Individual IDs" description="Assign quoll IDs to verified detections" tagClass="accent" imageCount={queue?.assign_individual ?? 0} onReview={() => openCategory('assign-individual')} />
                 </div>
             ) : (
                 <div className="review-list-view">
-                    <button type="button" className="btn btn-outline" style={{ marginBottom: '1rem' }} onClick={() => setFilter(null)}>← Back to categories</button>
-                    {filter === 'low-confidence' && (
-                        <div className="review-item-grid">
-                            {lowConf.slice(0, 20).map((d) => (
-                                <div key={d.id} className="review-item-card">
-                                    <div className="review-item-tags">
-                                        <span className={`tag tag-${(d.detection_confidence || 0) >= 0.7 ? 'primary' : 'accent'}`}>{Math.round((d.detection_confidence || 0) * 100)}%</span>
-                                        <span className="tag tag-muted">Low Confidence</span>
-                                    </div>
-                                    <div>Image Count — 1</div>
-                                    <div className="review-item-model">Model: YOLOV8</div>
-                                    <Link to={`/review/${d.id}`} className="btn btn-primary" style={{ marginTop: '0.75rem' }}>Review</Link>
-                                </div>
-                            ))}
-                        </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
+                        <button type="button" className="btn btn-outline" onClick={() => { setFilter(null); setFilterDetections([]); setFilterImages(null); }}>← Back to categories</button>
+                        {filter !== 'empty-check' && filterDetections.length > 0 && (
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                                Detection {reviewIdx + 1} of {filterDetections.length} — Use arrow keys / Y / N
+                            </span>
+                        )}
+                    </div>
+
+                    {filterLoading && <LoadingState />}
+
+                    {/* Verify Quolls / Low Confidence / Assign Individual — detection-based review */}
+                    {!filterLoading && filter !== 'empty-check' && filterDetections.length > 0 && (
+                        <ReviewDetectionInline
+                            detections={filterDetections}
+                            currentIdx={reviewIdx}
+                            onNavigate={setReviewIdx}
+                            onReviewed={() => setReviewed((r) => r + 1)}
+                            mode={filter === 'assign-individual' ? 'assign-id' : 'verify'}
+                        />
                     )}
-                    {filter === 'no-animal' && emptyImages && (
-                        <div className="review-item-grid">
-                            {emptyImages.items.map((img) => (
-                                <div key={img.id} className="review-item-card">
-                                    <div className="review-item-tags"><span className="tag tag-muted">No Animal</span></div>
-                                    <div>{img.filename}</div>
-                                    <Link to={`/review-empty/${img.id}`} className="btn btn-primary" style={{ marginTop: '0.75rem' }}>Annotate (add animal)</Link>
-                                </div>
-                            ))}
-                        </div>
+                    {!filterLoading && filter !== 'empty-check' && filterDetections.length === 0 && (
+                        <div className="empty-state"><h3>All caught up</h3><p>No detections in this category need review.</p></div>
                     )}
-                    {(filter === 'conflict' || filter === 'new-individual') && (
+
+                    {/* Empty check — image-based review */}
+                    {!filterLoading && filter === 'empty-check' && filterImages && (
                         <div className="review-item-grid">
-                            {(filter === 'new-individual' ? highConf : detections).slice(0, 20).map((d) => (
-                                <div key={d.id} className="review-item-card">
-                                    <div className="review-item-tags">
-                                        <span className="tag tag-primary">{Math.round((d.detection_confidence || 0) * 100)}%</span>
+                            {filterImages.items.map((img) => {
+                                const displayName = img.file_path ? img.file_path.split('/').slice(-2).join(' / ') : img.filename;
+                                return (
+                                    <div key={img.id} className="review-item-card">
+                                        <div className="review-item-thumb" style={{ height: 120, overflow: 'hidden', borderRadius: 6, marginBottom: '0.5rem' }}>
+                                            {(img.thumbnail_path || img.file_path) && <img src={storageUrl(img.thumbnail_path || img.file_path)} alt={img.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+                                        </div>
+                                        <div className="review-item-tags"><span className="tag tag-muted">Empty</span></div>
+                                        <div style={{ fontSize: '0.8rem', marginTop: '0.25rem' }}>{displayName}</div>
+                                        <Link to={`/review-image/${img.id}`} className="btn btn-primary" style={{ marginTop: '0.75rem' }}>Check Image</Link>
                                     </div>
-                                    <Link to={`/review/${d.id}`} className="btn btn-primary" style={{ marginTop: '0.75rem' }}>Review</Link>
+                                );
+                            })}
+                            {filterImages.pages > 1 && (
+                                <div className="pagination" style={{ gridColumn: '1/-1' }}>
+                                    <button className="page-btn" onClick={() => loadCategory('empty-check', filterPage - 1)} disabled={filterPage <= 1}>Prev</button>
+                                    <span className="page-info">Page {filterPage} of {filterImages.pages}</span>
+                                    <button className="page-btn" onClick={() => loadCategory('empty-check', filterPage + 1)} disabled={filterPage >= filterImages.pages}>Next</button>
                                 </div>
-                            ))}
+                            )}
                         </div>
                     )}
                 </div>
             )}
-
-            <div className="review-side-panels">
-                <div className="review-panel card">
-                    <h4>Analytics Overview</h4>
-                    <p>Reviews Completed This Week: <strong>{report?.processed_images ?? 0}</strong></p>
-                    <p>Average Model Confidence: <strong>76%</strong></p>
-                    <p>Most Common Pending: <span className="tag tag-accent">Low Confidence</span></p>
-                </div>
-                <div className="review-panel card">
-                    <h4>Focus Species</h4>
-                    <label><input type="radio" checked={focusSpecies === 'quoll'} onChange={() => setFocusSpecies('quoll')} /> Spotted-tail Quoll</label>
-                    <label><input type="radio" checked={focusSpecies === 'all'} onChange={() => setFocusSpecies('all')} /> All Species</label>
-                    <a href={getExportUrl('csv', focusSpecies === 'quoll' ? 'quoll' : undefined)} className="btn btn-outline" style={{ marginTop: '0.75rem', display: 'inline-flex' }}>Export Summary</a>
-                </div>
-            </div>
         </div>
     );
 }
 
-function ReviewCategoryCard({ title, tag, tagClass, imageCount, onReview }: { title: string; tag: string; tagClass: string; imageCount: number; onReview: () => void }) {
+/** Inline detection review with auto-advance and keyboard shortcuts */
+function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed, mode }: {
+    detections: Detection[];
+    currentIdx: number;
+    onNavigate: (idx: number) => void;
+    onReviewed: () => void;
+    mode: 'verify' | 'assign-id';
+}) {
+    const det = detections[currentIdx];
+    const [detail, setDetail] = useState<DetectionDetail | null>(null);
+    const [saving, setSaving] = useState(false);
+    const [correctedSpecies, setCorrectedSpecies] = useState('');
+    const [individualId, setIndividualId] = useState('');
+    const [notes, setNotes] = useState('');
+    const [lastAction, setLastAction] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!det) return;
+        setDetail(null);
+        setCorrectedSpecies('');
+        setIndividualId('');
+        setNotes('');
+        setLastAction(null);
+        fetchDetectionDetail(det.id).then(setDetail).catch(() => {});
+    }, [det?.id]);
+
+    const advance = () => {
+        onReviewed();
+        if (currentIdx < detections.length - 1) onNavigate(currentIdx + 1);
+    };
+
+    const submitVerdict = async (isCorrect: boolean) => {
+        if (!det) return;
+        setSaving(true);
+        try {
+            await createAnnotation({
+                detection_id: det.id,
+                is_correct: isCorrect,
+                corrected_species: !isCorrect && correctedSpecies ? correctedSpecies : undefined,
+                notes: notes || undefined,
+                flag_for_retraining: !isCorrect,
+            });
+            setLastAction(isCorrect ? 'Confirmed correct' : 'Marked incorrect');
+            setTimeout(advance, 400);
+        } catch { }
+        setSaving(false);
+    };
+
+    const submitIndividualId = async () => {
+        if (!det || !individualId) return;
+        setSaving(true);
+        try {
+            await createAnnotation({
+                detection_id: det.id,
+                is_correct: true,
+                individual_id: individualId,
+                notes: notes || undefined,
+            });
+            setLastAction(`Assigned: ${individualId}`);
+            setTimeout(advance, 400);
+        } catch { }
+        setSaving(false);
+    };
+
+    // Keyboard shortcuts
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+            if (mode === 'verify') {
+                if (e.key === 'y' || e.key === 'Y') submitVerdict(true);
+                if (e.key === 'n' || e.key === 'N') submitVerdict(false);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    });
+
+    if (!det) return <div className="empty-state">No detection selected.</div>;
+
     return (
-        <div className="review-category-card card">
-            <div className="review-category-tags">
-                <span className={`tag tag-${tagClass}`}>{tag}</span>
-                <span className={`tag tag-${tagClass}`}>{tag.split(' ')[0]}</span>
+        <div className="chart-grid" style={{ gridTemplateColumns: '1.5fr 1fr' }}>
+            <div className="card">
+                <div className="card-header" style={{ justifyContent: 'space-between' }}>
+                    <h3>Detection #{det.id} — {det.species || 'Unknown'}</h3>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <button className="btn btn-outline" onClick={() => onNavigate(Math.max(0, currentIdx - 1))} disabled={currentIdx <= 0}>Prev</button>
+                        <span style={{ fontSize: '0.8rem' }}>{currentIdx + 1}/{detections.length}</span>
+                        <button className="btn btn-outline" onClick={() => onNavigate(Math.min(detections.length - 1, currentIdx + 1))} disabled={currentIdx >= detections.length - 1}>Next</button>
+                    </div>
+                </div>
+                <div className="card-body" style={{ textAlign: 'center' }}>
+                    {det.crop_path && <img src={storageUrl(det.crop_path)} alt="crop" style={{ maxWidth: '100%', maxHeight: '50vh', borderRadius: 8 }} />}
+                    <div style={{ marginTop: '0.75rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem', justifyContent: 'center' }}>
+                        <span className="tag tag-primary">{det.species || 'Unknown'}</span>
+                        <span className={`tag ${(det.classification_confidence ?? 0) >= 0.5 ? 'tag-primary' : 'tag-accent'}`}>
+                            Cls: {det.classification_confidence != null ? (det.classification_confidence * 100).toFixed(1) + '%' : 'N/A'}
+                        </span>
+                        <span className="tag tag-muted">Det: {(det.detection_confidence * 100).toFixed(1)}%</span>
+                        {detail?.camera && <span className="tag tag-info">Cam: {detail.camera.name}</span>}
+                        {detail?.image?.captured_at && <span className="tag tag-muted">{new Date(detail.image.captured_at).toLocaleString()}</span>}
+                    </div>
+                    {lastAction && <div style={{ marginTop: '0.5rem', color: 'var(--primary)', fontWeight: 600, fontSize: '0.85rem' }}>{lastAction}</div>}
+                </div>
             </div>
-            <div className="review-category-title">{title}</div>
-            <div className="review-category-meta">Image Count - {fmt(imageCount)}</div>
-            <div className="review-category-model">Model: YOLOV8</div>
-            <button type="button" className="btn btn-primary" onClick={onReview}>Review</button>
+            <div className="card">
+                <div className="card-header"><h3>{mode === 'assign-id' ? 'Assign Individual' : 'Quick Review'}</h3></div>
+                <div className="card-body">
+                    {mode === 'verify' && (
+                        <>
+                            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+                                <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => submitVerdict(true)} disabled={saving}>
+                                    Correct (Y)
+                                </button>
+                                <button className="btn btn-outline" style={{ flex: 1, borderColor: '#ef4444', color: '#ef4444' }} onClick={() => submitVerdict(false)} disabled={saving}>
+                                    Incorrect (N)
+                                </button>
+                            </div>
+                            <div style={{ marginBottom: '0.75rem' }}>
+                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Corrected species (if incorrect)</label>
+                                <select className="filter-select" style={{ width: '100%' }} value={correctedSpecies} onChange={(e) => setCorrectedSpecies(e.target.value)}>
+                                    <option value="">-- select --</option>
+                                    <option>Spotted-tailed Quoll</option>
+                                    <option>Common Brushtail Possum</option>
+                                    <option>Red Fox</option>
+                                    <option>Feral Cat</option>
+                                    <option>Common Wombat</option>
+                                    <option>Short-beaked Echidna</option>
+                                    <option>Unknown</option>
+                                    <option>Not an animal</option>
+                                </select>
+                            </div>
+                        </>
+                    )}
+                    {mode === 'assign-id' && (
+                        <>
+                            <div style={{ marginBottom: '0.75rem' }}>
+                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Individual ID (e.g. 02Q2)</label>
+                                <input className="filter-select" style={{ width: '100%' }} value={individualId} onChange={(e) => setIndividualId(e.target.value)} placeholder="Enter ID or 'new'" />
+                            </div>
+                            <button className="btn btn-primary" style={{ width: '100%' }} onClick={submitIndividualId} disabled={saving || !individualId}>
+                                {saving ? 'Saving...' : 'Assign ID'}
+                            </button>
+                        </>
+                    )}
+                    <div style={{ marginTop: '0.75rem' }}>
+                        <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Notes</label>
+                        <textarea className="filter-select" style={{ width: '100%', minHeight: 50, resize: 'vertical' }} value={notes} onChange={(e) => setNotes(e.target.value)} />
+                    </div>
+                    <div style={{ marginTop: '0.75rem' }}>
+                        <button className="btn btn-outline" style={{ fontSize: '0.8rem' }} onClick={advance}>Skip (S)</button>
+                    </div>
+                    <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                        <strong>Shortcuts:</strong> Y = correct, N = incorrect, S = skip, arrows = navigate
+                    </div>
+                </div>
+            </div>
         </div>
     );
 }
 
+function ReviewCategoryCard({ title, description, tagClass, imageCount, onReview }: { title: string; description: string; tagClass: string; imageCount: number; onReview: () => void }) {
+    return (
+        <div className="review-category-card card" style={{ cursor: 'pointer' }} onClick={onReview}>
+            <div className="review-category-title">{title}</div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '0.25rem 0 0.5rem' }}>{description}</div>
+            <div className="review-category-meta"><span className={`tag tag-${tagClass}`}>{fmt(imageCount)} items</span></div>
+            <button type="button" className="btn btn-primary" style={{ marginTop: '0.75rem' }} onClick={(e) => { e.stopPropagation(); onReview(); }}>Start Review</button>
+        </div>
+    );
+}
+
+/* ============================================================
+   DASHBOARD (Home — WildlifeTracker approved design)
+   ============================================================ */
 function Dashboard() {
     const [stats, setStats] = useState<DashboardStats | null>(null);
     const [report, setReport] = useState<ReportData | null>(null);
@@ -570,6 +608,7 @@ function Dashboard() {
         ? [camsWithCoords[0].latitude!, camsWithCoords[0].longitude!]
         : [-34.4, 150.3];
 
+    // Activity by time of day: group hourly_activity into Dawn/Morning/Afternoon/Evening/Night
     const hourGroups = [
         { name: 'Dawn', hours: [5, 6, 7] },
         { name: 'Morning', hours: [8, 9, 10, 11] },
@@ -586,12 +625,14 @@ function Dashboard() {
         count: g.hours.reduce((sum, h) => sum + (hourlyMap.get(h) || 0), 0),
     }));
 
+    // Observation trends: 6 months (use report total or mock)
     const totalDet = report?.total_detections ?? stats.total_detections;
     const observationTrends = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'].map((name, i) => ({
         name,
         count: Math.round(totalDet * (0.6 + (i * 0.1)) + Math.random() * 20),
     }));
 
+    // Species abundance: Species, Individuals, Density, Trend (design uses Koala/Quoll/Kangaroo; we use API species + mock density/trend)
     const speciesAbundance = species.slice(0, 8).map((s, i) => ({
         species: s.species,
         individuals: s.count,
@@ -740,6 +781,9 @@ function Dashboard() {
     );
 }
 
+/* ============================================================
+   IMAGE BROWSER
+   ============================================================ */
 function ImageBrowser() {
     const [images, setImages] = useState<PaginatedResponse<ImageData> | null>(null);
     const [page, setPage] = useState(1);
@@ -816,7 +860,7 @@ function ImageBrowser() {
                                     {img.has_animal && <div style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(16,185,129,0.9)', borderRadius: '6px', padding: '2px 6px', fontSize: '0.65rem', fontWeight: 700, color: 'white' }}>ANIMAL</div>}
                                 </div>
                                 <div className="image-info">
-                                    <div className="image-filename">{img.filename}</div>
+                                    <div className="image-filename">{displayImageName(img)}</div>
                                     <div className="image-meta">
                                         {img.processed ? <span className="tag tag-primary">Processed</span> : <span className="tag tag-muted">Pending</span>}
                                         {img.camera_id && <span className="tag tag-info">Cam {img.camera_id}</span>}
@@ -871,6 +915,9 @@ function ImageBrowser() {
     );
 }
 
+/* ============================================================
+   DETECTION VIEWER
+   ============================================================ */
 function DetectionViewer() {
     const [species, setSpecies] = useState<SpeciesCount[]>([]);
     const [loading, setLoading] = useState(true);
@@ -915,6 +962,802 @@ function DetectionViewer() {
     );
 }
 
+/* ============================================================
+   INDIVIDUAL QUOLLS
+   ============================================================ */
+function Individuals() {
+    const [individuals, setIndividuals] = useState<IndividualData[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => { fetchIndividuals().then(setIndividuals).catch((e) => setError(e.message)).finally(() => setLoading(false)); }, []);
+    if (loading) return <LoadingState />;
+    if (error) return <ErrorState message={error} />;
+
+    return (
+        <>
+            <div className="page-header"><h2>Quoll Profiles</h2><p>Known individual Spotted-tailed Quolls</p></div>
+            {individuals.length === 0 ? <div className="empty-state"><div className="icon">🐾</div><h3>No individuals imported yet</h3></div> : (
+                <>
+                    <div className="stats-grid" style={{ marginBottom: '2rem' }}>
+                        <StatCard icon="🐾" value={fmt(individuals.length)} label="Known Individuals" />
+                        <StatCard icon="👁️" value={fmt(individuals.reduce((s, i) => s + i.total_sightings, 0))} label="Total Sightings" />
+                    </div>
+                    <div className="quoll-grid">
+                        {individuals.map((ind) => (
+                            <div key={ind.individual_id} className="quoll-card">
+                                <div className="quoll-id">🐾 {ind.individual_id}</div>
+                                <div className="quoll-species">{ind.species}</div>
+                                <div className="quoll-stats">
+                                    <div className="quoll-stat"><div className="label">Sightings</div><div className="value">{ind.total_sightings}</div></div>
+                                    <div className="quoll-stat"><div className="label">First Seen</div><div className="value">{ind.first_seen ? new Date(ind.first_seen).toLocaleDateString() : '—'}</div></div>
+                                    <div className="quoll-stat"><div className="label">Last Seen</div><div className="value">{ind.last_seen ? new Date(ind.last_seen).toLocaleDateString() : '—'}</div></div>
+                                    <div className="quoll-stat"><div className="label">Active</div><div className="value">{ind.first_seen && ind.last_seen ? `${Math.ceil((new Date(ind.last_seen).getTime() - new Date(ind.first_seen).getTime()) / 86400000)}d` : '—'}</div></div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </>
+            )}
+        </>
+    );
+}
+
+/* ============================================================
+   BATCH UPLOAD
+   ============================================================ */
+function parseFolderStructure(files: File[]) {
+    const cameras = new Map<string, number>();
+    let collectionName = '';
+    for (const f of files) {
+        const relPath = (f as any).webkitRelativePath || '';
+        const parts = relPath.split('/').filter(Boolean);
+        if (parts.length >= 2 && !collectionName) collectionName = parts[0];
+        if (parts.length >= 3) {
+            const cam = parts[1];
+            cameras.set(cam, (cameras.get(cam) || 0) + 1);
+        }
+    }
+    return { collectionName, cameras };
+}
+
+function BatchUpload() {
+    const [job, setJob] = useState<JobStatus | null>(null);
+    const [uploading, setUploading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+    const [dragOver, setDragOver] = useState(false);
+    const [collectionName, setCollectionName] = useState('');
+    const folderRef = useRef<HTMLInputElement>(null);
+
+    const folderInfo = selectedFiles.length > 0 ? parseFolderStructure(selectedFiles) : null;
+
+    useEffect(() => {
+        if (folderInfo?.collectionName && !collectionName) setCollectionName(folderInfo.collectionName);
+    }, [folderInfo?.collectionName]);
+
+    const addFiles = (files: FileList | File[]) => {
+        const arr = Array.from(files).filter((f) => /\.(jpe?g|png)$/i.test(f.name));
+        setSelectedFiles(arr);
+    };
+
+    const handleDrop = (e: React.DragEvent) => {
+        e.preventDefault();
+        setDragOver(false);
+        if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+    };
+
+    const handleUpload = async () => {
+        if (selectedFiles.length === 0) return;
+        setUploading(true);
+        setError(null);
+        try {
+            const res = await uploadBatch(selectedFiles, collectionName || undefined);
+            pollJob(res.job_id);
+        } catch (e: any) {
+            const msg = e?.message?.includes('fetch')
+                ? 'Upload connection dropped. Try smaller batches or retry.'
+                : e.message;
+            setError(msg);
+            setUploading(false);
+        }
+    };
+
+    const pollJob = useCallback(async (jobId: number) => {
+        try {
+            const s = await fetchJobStatus(jobId);
+            setJob(s);
+            setUploading(false);
+            if (s.status === 'queued' || s.status === 'processing') {
+                setTimeout(() => pollJob(jobId), 2000);
+            }
+        } catch {
+            setUploading(false);
+        }
+    }, []);
+
+    return (
+        <>
+            <div className="page-header"><h2>Upload Images</h2><p>Select a collection folder containing camera trap subfolders.</p></div>
+
+            <div
+                className={`dropzone ${dragOver ? 'dragover' : ''}`}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+                onClick={() => folderRef.current?.click()}
+            >
+                <input
+                    ref={folderRef}
+                    type="file"
+                    multiple
+                    accept=".jpg,.jpeg,.png"
+                    style={{ display: 'none' }}
+                    {...({ webkitdirectory: '', directory: '' } as any)}
+                    onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }}
+                />
+                <div className="dropzone-icon">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                </div>
+                <p className="dropzone-text">Drop folder here or click to browse</p>
+                <p className="dropzone-hint">Select the collection folder (e.g. MortonNP_June2025/) containing camera subfolders</p>
+                <div className="dropzone-buttons">
+                    <button type="button" className="btn btn-primary" onClick={(e) => { e.stopPropagation(); folderRef.current?.click(); }}>Choose Folder</button>
+                </div>
+            </div>
+
+            {/* Folder summary: collection + cameras detected */}
+            {folderInfo && selectedFiles.length > 0 && !job && (
+                <div className="upload-summary card">
+                    <div className="card-header"><h3>Folder Summary</h3></div>
+                    <div className="card-body">
+                        <div className="upload-summary-field">
+                            <label>Collection Name</label>
+                            <input className="filter-select" style={{ width: '100%' }} value={collectionName} onChange={(e) => setCollectionName(e.target.value)} placeholder="e.g. MortonNP_June2025" />
+                        </div>
+                        <div className="upload-summary-stats">
+                            <div className="upload-summary-stat">
+                                <span className="num">{selectedFiles.length}</span>
+                                <span className="label">Total Images</span>
+                            </div>
+                            <div className="upload-summary-stat">
+                                <span className="num">{folderInfo.cameras.size}</span>
+                                <span className="label">Camera Traps Detected</span>
+                            </div>
+                        </div>
+                        {folderInfo.cameras.size > 0 && (
+                            <div className="upload-camera-list">
+                                <h4>Cameras</h4>
+                                <div className="upload-camera-grid">
+                                    {Array.from(folderInfo.cameras.entries()).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })).map(([cam, count]) => (
+                                        <div key={cam} className="upload-camera-chip">
+                                            <span className="cam-name">{cam}</span>
+                                            <span className="cam-count">{count} images</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                        {folderInfo.cameras.size === 0 && (
+                            <p style={{ color: 'var(--warning)', fontSize: '0.85rem', marginTop: '0.75rem' }}>
+                                No camera subfolders detected. Images will be uploaded without camera assignment. Expected structure: Collection/CameraName/image.jpg
+                            </p>
+                        )}
+                        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem' }}>
+                            <button className="btn btn-primary" onClick={handleUpload} disabled={uploading}>{uploading ? 'Uploading...' : `Upload & Process (${selectedFiles.length} images)`}</button>
+                            <button className="btn btn-outline" onClick={() => { setSelectedFiles([]); setCollectionName(''); }}>Clear</button>
+                        </div>
+                        {error && <p style={{ color: 'var(--danger)', marginTop: '0.5rem', fontSize: '0.85rem' }}>{error}</p>}
+                    </div>
+                </div>
+            )}
+
+            {/* Batch processing progress */}
+            {job && (
+                <div className="upload-batch-progress card">
+                    <div className="card-header">
+                        <h3>Batch Processing — {job.batch_name || `Job #${job.id}`}</h3>
+                        <span className={`tag ${job.status === 'completed' ? 'tag-primary' : job.status === 'failed' ? 'tag-danger' : 'tag-accent'}`}>{job.status}</span>
+                    </div>
+                    <div className="card-body">
+                        <div className="progress-bar-bg"><div className="progress-bar-fill" style={{ width: `${job.percent}%` }} /></div>
+                        <div className="progress-label"><span>{job.processed_images} / {job.total_images} processed</span><span>{job.percent.toFixed(1)}%</span></div>
+                        {job.failed_images > 0 && <p style={{ color: 'var(--danger)', marginTop: '0.5rem', fontSize: '0.85rem' }}>{job.failed_images} failed</p>}
+                        {job.status === 'failed' && job.error_message && <p style={{ color: 'var(--danger)', marginTop: '0.5rem', fontSize: '0.85rem' }}>{job.error_message}</p>}
+                        {job.status === 'completed' && <p style={{ color: 'var(--success)', marginTop: '0.5rem', fontSize: '0.85rem' }}>All images processed successfully.</p>}
+                    </div>
+                </div>
+            )}
+        </>
+    );
+}
+
+/* ============================================================
+   REPORTS
+   ============================================================ */
+function Reports() {
+    const [report, setReport] = useState<ReportData | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+
+    const [startDate, setStartDate] = useState('');
+    const [endDate, setEndDate] = useState('');
+    const [location, setLocation] = useState('All Locations');
+    const [individual, setIndividual] = useState('');
+    const [exportFormat, setExportFormat] = useState<'pdf' | 'csv'>('pdf');
+    
+    const [incTimestamps, setIncTimestamps] = useState(true);
+    const [incGPS, setIncGPS] = useState(true);
+    const [incConfidence, setIncConfidence] = useState(true);
+    const [incEnv, setIncEnv] = useState(false);
+    const [incCamera, setIncCamera] = useState(false);
+
+    useEffect(() => { 
+        fetchReport().then(setReport).catch((e) => setError(e.message)).finally(() => setLoading(false)); 
+    }, []);
+
+    if (loading) return <LoadingState />;
+    if (error) return <ErrorState message={error} />;
+    if (!report) return null;
+
+    const downloadFile = async (url: string, filename: string) => {
+        try {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`Download failed (${res.status})`);
+            const blob = await res.blob();
+            const objectUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = objectUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(objectUrl);
+        } catch (e: any) {
+            setError(e.message || 'Download failed');
+        }
+    };
+
+    const handleExport = () => {
+        if (exportFormat === 'csv') {
+            downloadFile(getExportUrl('csv'), 'custom_wildlife_report.csv');
+        } else {
+            alert("PDF generation is currently being implemented on the server. Downloading raw JSON data instead.");
+            downloadFile(getExportUrl('json'), 'wildlife_report_data.json');
+        }
+    };
+
+    return (
+        <div className="reports-page-wrapper">
+            <div className="reports-container">
+                
+                {/* Header */}
+                <div className="reports-header">
+                    <div>
+                        <h1 className="reports-title">Report Generation</h1>
+                        <p className="reports-subtitle">Generate and export reports for your sightings data</p>
+                    </div>
+                    <button onClick={handleExport} className="btn-export">
+                        <img src="https://api.iconify.design/heroicons:arrow-down-tray-20-solid.svg?color=white" alt="download" />
+                        Export Report
+                    </button>
+                </div>
+
+                {/* Customisation UI */}
+                <section className="report-section">
+                    <h2 className="section-label">Customise Your Report</h2>
+                    
+                    <div className="form-grid">
+                        <div className="form-col-span-2">
+                            <div className="date-row">
+                                <div>
+                                    <label className="form-label">Date Range</label>
+                                    <div className="date-flex">
+                                        <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="form-input" />
+                                        <span className="date-sep">to</span>
+                                        <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="form-input" />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="form-label">Location</label>
+                                    <select value={location} onChange={(e) => setLocation(e.target.value)} className="form-input">
+                                        <option>All Locations</option>
+                                        {report.camera_counts.map(c => (
+                                            <option key={c.camera} value={c.camera}>{c.camera}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
+                            <div style={{ marginTop: '1.5rem' }}>
+                                <label className="form-label">Individual</label>
+                                <input type="text" value={individual} onChange={(e) => setIndividual(e.target.value)} placeholder="e.g. #STQ_12A, #STQ_13A" className="form-input" />
+                            </div>
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '100%' }}>
+                            <div>
+                                <label className="form-label">Report Format</label>
+                                <div className="format-group">
+                                    <label className={`format-card ${exportFormat === 'pdf' ? 'active' : ''}`} onClick={() => setExportFormat('pdf')}>
+                                        <img src="https://api.iconify.design/bi:file-earmark-pdf-fill.svg" alt="pdf" />
+                                        <span>PDF Report</span>
+                                    </label>
+                                    <label className={`format-card ${exportFormat === 'csv' ? 'active' : ''}`} onClick={() => setExportFormat('csv')}>
+                                        <img src="https://api.iconify.design/bi:file-earmark-spreadsheet-fill.svg" alt="csv" />
+                                        <span>CSV Data</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div className="checkbox-section">
+                        <label className="form-label" style={{ marginBottom: '1rem' }}>Data To Include</label>
+                        <div className="checkbox-grid">
+                            <label className="checkbox-label">
+                                <input type="checkbox" checked={incTimestamps} onChange={(e) => setIncTimestamps(e.target.checked)} className="custom-checkbox" />
+                                <span>Sighting Timestamps</span>
+                            </label>
+                            <label className="checkbox-label">
+                                <input type="checkbox" checked={incGPS} onChange={(e) => setIncGPS(e.target.checked)} className="custom-checkbox" />
+                                <span>GPS Coordinates</span>
+                            </label>
+                            <label className="checkbox-label">
+                                <input type="checkbox" checked={incConfidence} onChange={(e) => setIncConfidence(e.target.checked)} className="custom-checkbox" />
+                                <span>AI Confidence Score</span>
+                            </label>
+                            <label className="checkbox-label">
+                                <input type="checkbox" checked={incEnv} onChange={(e) => setIncEnv(e.target.checked)} className="custom-checkbox" />
+                                <span>Environment Data</span>
+                            </label>
+                            <label className="checkbox-label">
+                                <input type="checkbox" checked={incCamera} onChange={(e) => setIncCamera(e.target.checked)} className="custom-checkbox" />
+                                <span>Camera Trap ID</span>
+                            </label>
+                        </div>
+                    </div>
+                </section>
+
+                {/* Report Preview */}
+                <section className="preview-section">
+                    <div className="preview-header">
+                        <span className="preview-header-title">Report Preview</span>
+                        <span className="preview-header-meta">Showing Sample Sightings</span>
+                    </div>
+
+                    <div className="table-wrapper">
+                        <table className="report-table">
+                            <thead>
+                                <tr>
+                                    <th>Sighting ID</th>
+                                    {incTimestamps && <th>Timestamp</th>}
+                                    <th>Species</th>
+                                    {incConfidence && <th>Confidence</th>}
+                                    {incGPS && <th>Coordinates</th>}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td className="text-strong">S-001</td>
+                                    {incTimestamps && <td style={{ color: '#4b5563' }}>2025-09-13 23:12:04</td>}
+                                    <td className="text-italic">Spotted-tail Quoll</td>
+                                    {incConfidence && <td><span className="conf-high">96%</span></td>}
+                                    {incGPS && <td className="text-mono">-35.123, 150.456</td>}
+                                </tr>
+                                <tr>
+                                    <td className="text-strong">S-005</td>
+                                    {incTimestamps && <td style={{ color: '#4b5563' }}>2025-09-13 15:22:56</td>}
+                                    <td className="text-italic">Spotted-tail Quoll</td>
+                                    {incConfidence && <td><span className="conf-low">46%</span></td>}
+                                    {incGPS && <td className="text-mono">-35.120, 150.450</td>}
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="viz-area">
+                        <h4 className="section-label" style={{ marginBottom: '2.5rem' }}>Additional Data Visualizations</h4>
+                        <div className="viz-grid">
+                            {report.species_distribution.length > 0 && (
+                                <div className="viz-card">
+                                    <div style={{ height: 300 }}>
+                                        <ResponsiveContainer>
+                                            <PieChart>
+                                                <Pie data={report.species_distribution} dataKey="count" nameKey="species" cx="50%" cy="50%" outerRadius={100} label={({ species, percent }) => `${species.split('|').pop()?.trim()} ${(percent * 100).toFixed(0)}%`}>
+                                                    {report.species_distribution.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                                                </Pie>
+                                                <Tooltip />
+                                            </PieChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                    <p className="viz-caption">Fig 1. Species Distribution</p>
+                                </div>
+                            )}
+                            
+                            {report.hourly_activity.length > 0 && (
+                                <div className="viz-card">
+                                    <div style={{ height: 300 }}>
+                                        <ResponsiveContainer>
+                                            <BarChart data={report.hourly_activity}>
+                                                <XAxis dataKey="hour" tick={{ fill: '#9ca3af', fontSize: 12 }} />
+                                                <YAxis tick={{ fill: '#9ca3af', fontSize: 12 }} />
+                                                <Tooltip contentStyle={{ background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '8px' }} />
+                                                <Bar dataKey="detections" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                    <p className="viz-caption">Fig 2. Quoll Activity Pattern (24h)</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    );
+}
+
+/* ============================================================
+   IMAGE REVIEW (annotation workflow)
+   ============================================================ */
+function ImageReview() {
+    const params = useParams();
+    const id = parseInt(params.detectionId || '0');
+    const [det, setDet] = useState<DetectionDetail | null>(null);
+    const [anns, setAnns] = useState<AnnotationData[]>([]);
+    const [form, setForm] = useState<{ is_correct: boolean; corrected_species: string; notes: string; individual_id: string; flag_for_retraining: boolean; bbox?: { x: number; y: number; w: number; h: number } }>({ is_correct: true, corrected_species: '', notes: '', individual_id: '', flag_for_retraining: false });
+    const [saving, setSaving] = useState(false);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        if (!id) return;
+        Promise.all([fetchDetectionDetail(id), fetchAnnotations(id)])
+            .then(([d, a]) => { setDet(d); setAnns(a); }).finally(() => setLoading(false));
+    }, [id]);
+
+    const submit = async () => {
+        if (!det) return;
+        setSaving(true);
+        try {
+            const notes = form.bbox ? JSON.stringify({ bbox: form.bbox, type: 'user_drawn' }) : form.notes;
+            const ann = await createAnnotation({
+                detection_id: det.id,
+                is_correct: form.is_correct,
+                corrected_species: form.corrected_species || undefined,
+                notes: notes || undefined,
+                individual_id: form.individual_id || undefined,
+                flag_for_retraining: form.flag_for_retraining,
+            });
+            setAnns([ann, ...anns]);
+            setForm({ is_correct: true, corrected_species: '', notes: '', individual_id: '', flag_for_retraining: false, bbox: undefined });
+        } catch { }
+        setSaving(false);
+    };
+
+    if (loading) return <LoadingState />;
+    if (!det) return <div className="empty-state"><h3>Detection not found</h3></div>;
+
+    return (
+        <>
+            <div className="page-header"><h2>Review Detection #{det.id}</h2><p>{det.image ? displayImageName(det.image) : 'Unknown'} — {det.species}</p></div>
+            <div className="chart-grid">
+                <div className="card">
+                    <div className="card-header"><h3>Image</h3></div>
+                    <div className="card-body" style={{ textAlign: 'center' }}>
+                        {det.crop_path && <img src={storageUrl(det.crop_path)} alt="crop" style={{ maxWidth: '100%', borderRadius: 8 }} />}
+                        <div style={{ marginTop: '1rem', fontSize: '0.85rem' }}>
+                            <div><strong>Species:</strong> {det.species || 'Unknown'}</div>
+                            <div><strong>Confidence:</strong> {det.classification_confidence?.toFixed(3)}</div>
+                            <div><strong>Detection conf:</strong> {det.detection_confidence.toFixed(3)}</div>
+                            <div><strong>Model:</strong> {det.model_version}</div>
+                            <div><strong>Camera:</strong> {det.camera?.name || '—'}</div>
+                            <div><strong>Timestamp:</strong> {det.image?.captured_at || '—'}</div>
+                            <div><strong>Bbox:</strong> [{det.bbox_x.toFixed(3)}, {det.bbox_y.toFixed(3)}, {det.bbox_w.toFixed(3)}, {det.bbox_h.toFixed(3)}]</div>
+                        </div>
+                    </div>
+                </div>
+                <div className="card">
+                    <div className="card-header"><h3>Annotate</h3></div>
+                    <div className="card-body">
+                        <div style={{ marginBottom: '1rem' }}>
+                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>ML prediction correct?</label>
+                            <select className="filter-select" value={String(form.is_correct)} onChange={(e) => setForm({ ...form, is_correct: e.target.value === 'true' })}>
+                                <option value="true">Yes, correct</option><option value="false">No, incorrect</option>
+                            </select>
+                        </div>
+                        {!form.is_correct && (
+                            <div style={{ marginBottom: '1rem' }}>
+                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Corrected species</label>
+                                <input className="filter-select" style={{ width: '100%' }} value={form.corrected_species} onChange={(e) => setForm({ ...form, corrected_species: e.target.value })} placeholder="e.g. Trichosurus sp | Brushtail Possum sp" />
+                            </div>
+                        )}
+                        <div style={{ marginBottom: '1rem' }}>
+                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Individual ID (e.g. 02Q2)</label>
+                            <input className="filter-select" style={{ width: '100%' }} value={form.individual_id} onChange={(e) => setForm({ ...form, individual_id: e.target.value })} />
+                        </div>
+                        <div style={{ marginBottom: '1rem' }}>
+                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Notes</label>
+                            <textarea className="filter-select" style={{ width: '100%', minHeight: 60, resize: 'vertical' }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+                        </div>
+                        <div style={{ marginBottom: '1rem' }}>
+                            <label style={{ fontSize: '0.8rem', cursor: 'pointer' }}>
+                                <input type="checkbox" checked={form.flag_for_retraining} onChange={(e) => setForm({ ...form, flag_for_retraining: e.target.checked })} style={{ marginRight: '0.5rem' }} />
+                                Flag for retraining dataset
+                            </label>
+                        </div>
+                        {!form.is_correct && (
+                            <div style={{ marginBottom: '1rem' }}>
+                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Draw box around animal (feedback for model)</label>
+                                {det.image?.file_path && (
+                                    <BboxDrawer
+                                        imageUrl={storageUrl(det.image.file_path)}
+                                        onDraw={(bbox) => setForm((f) => ({ ...f, bbox }))}
+                                    />
+                                )}
+                            </div>
+                        )}
+                        <button className="btn btn-primary" onClick={submit} disabled={saving}>{saving ? 'Saving...' : 'Save Annotation'}</button>
+
+                        {anns.length > 0 && (
+                            <div style={{ marginTop: '1.5rem' }}>
+                                <h4 style={{ fontSize: '0.85rem', marginBottom: '0.5rem' }}>Previous Annotations</h4>
+                                {anns.map((a) => (
+                                    <div key={a.id} style={{ background: 'var(--bg-primary)', borderRadius: 8, padding: '0.75rem', marginBottom: '0.5rem', fontSize: '0.8rem' }}>
+                                        <div>{a.is_correct ? '✅ Correct' : '❌ Incorrect'}{a.corrected_species && ` → ${a.corrected_species}`}</div>
+                                        {a.notes && <div style={{ color: 'var(--text-muted)' }}>{a.notes}</div>}
+                                        <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>{a.annotator} — {a.created_at}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </>
+    );
+}
+
+/* Draw bbox on image for annotation / missed-detection feedback */
+function BboxDrawer({ imageUrl, onDraw }: { imageUrl: string; onDraw: (bbox: { x: number; y: number; w: number; h: number }) => void }) {
+    const imgRef = useRef<HTMLImageElement>(null);
+    const drawingRef = useRef(false);
+    const startRef = useRef<{ x: number; y: number } | null>(null);
+    const [liveBox, setLiveBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+    const [savedBox, setSavedBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+
+    const toRelative = useCallback((clientX: number, clientY: number) => {
+        const img = imgRef.current;
+        if (!img) return { x: 0, y: 0 };
+        const rect = img.getBoundingClientRect();
+        return {
+            x: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
+            y: Math.max(0, Math.min(1, (clientY - rect.top) / rect.height)),
+        };
+    }, []);
+
+    const handlePointerDown = useCallback((e: React.PointerEvent) => {
+        e.preventDefault();
+        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        const pt = toRelative(e.clientX, e.clientY);
+        startRef.current = pt;
+        drawingRef.current = true;
+        setLiveBox({ x: pt.x, y: pt.y, w: 0, h: 0 });
+        setSavedBox(null);
+    }, [toRelative]);
+
+    const handlePointerMove = useCallback((e: React.PointerEvent) => {
+        if (!drawingRef.current || !startRef.current) return;
+        const pt = toRelative(e.clientX, e.clientY);
+        const s = startRef.current;
+        setLiveBox({
+            x: Math.min(s.x, pt.x),
+            y: Math.min(s.y, pt.y),
+            w: Math.abs(pt.x - s.x),
+            h: Math.abs(pt.y - s.y),
+        });
+    }, [toRelative]);
+
+    const handlePointerUp = useCallback((e: React.PointerEvent) => {
+        if (!drawingRef.current || !startRef.current) return;
+        drawingRef.current = false;
+        const pt = toRelative(e.clientX, e.clientY);
+        const s = startRef.current;
+        const box = {
+            x: Math.min(s.x, pt.x),
+            y: Math.min(s.y, pt.y),
+            w: Math.max(Math.abs(pt.x - s.x), 0.02),
+            h: Math.max(Math.abs(pt.y - s.y), 0.02),
+        };
+        startRef.current = null;
+        setLiveBox(null);
+        setSavedBox(box);
+        onDraw(box);
+    }, [toRelative, onDraw]);
+
+    const box = liveBox || savedBox;
+
+    return (
+        <div style={{ userSelect: 'none' }}>
+            <div
+                style={{ position: 'relative', display: 'inline-block', cursor: 'crosshair', maxWidth: '100%', touchAction: 'none' }}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+            >
+                <img ref={imgRef} src={imageUrl} alt="Draw box" draggable={false} style={{ maxWidth: '100%', height: 'auto', display: 'block', borderRadius: 8 }} />
+                {box && box.w > 0.005 && box.h > 0.005 && (
+                    <div
+                        style={{
+                            position: 'absolute',
+                            left: `${box.x * 100}%`,
+                            top: `${box.y * 100}%`,
+                            width: `${box.w * 100}%`,
+                            height: `${box.h * 100}%`,
+                            border: '3px solid #10b981',
+                            background: 'rgba(16, 185, 129, 0.15)',
+                            borderRadius: 4,
+                            pointerEvents: 'none',
+                        }}
+                    />
+                )}
+            </div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
+                {savedBox ? '✓ Box drawn — drag again to redraw' : 'Click and drag on the image to draw a box around the animal'}
+            </div>
+        </div>
+    );
+}
+
+/* ============================================================
+   REVIEW IMAGE — step-based review from any image context
+   Step 1: What action?  (Confirm empty / Has animal)
+   Step 2 (if has animal): Species? → Draw bbox → Save
+   ============================================================ */
+function ReviewImage() {
+    const { imageId } = useParams();
+    const id = parseInt(imageId || '0');
+    const [image, setImage] = useState<ImageData | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [step, setStep] = useState<'choose' | 'annotate' | 'done'>('choose');
+    const [bbox, setBbox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+    const [species, setSpecies] = useState('Spotted-tailed Quoll');
+    const [individualId, setIndividualId] = useState('');
+    const [notes, setNotes] = useState('');
+    const [saving, setSaving] = useState(false);
+
+    useEffect(() => {
+        if (!id) return;
+        fetchImageDetail(id).then((data: any) => setImage(data)).catch(() => {}).finally(() => setLoading(false));
+    }, [id]);
+
+    const confirmEmpty = async () => {
+        if (!image) return;
+        setSaving(true);
+        try {
+            await createMissedDetection(image.id, { bbox_x: 0, bbox_y: 0, bbox_w: 0, bbox_h: 0, species: '__confirmed_empty__', flag_for_retraining: false });
+            setStep('done');
+        } catch { }
+        setSaving(false);
+    };
+
+    const submitAnimal = async () => {
+        if (!image || !bbox) return;
+        setSaving(true);
+        try {
+            await createMissedDetection(image.id, { bbox_x: bbox.x, bbox_y: bbox.y, bbox_w: bbox.w, bbox_h: bbox.h, species, flag_for_retraining: true });
+            setStep('done');
+        } catch { }
+        setSaving(false);
+    };
+
+    if (loading) return <LoadingState />;
+    if (!image) return <div className="empty-state"><h3>Image not found</h3></div>;
+
+    if (step === 'done') return (
+        <div className="review-done">
+            <div className="review-done-icon">✓</div>
+            <h2>Review saved</h2>
+            <p>Thank you — this feedback will help improve the model.</p>
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', marginTop: '1rem' }}>
+                <Link to="/pending-review" className="btn btn-primary">Back to Pending Review</Link>
+                <button type="button" className="btn btn-outline" onClick={() => window.history.back()}>Go Back</button>
+            </div>
+        </div>
+    );
+
+    return (
+        <div>
+            <nav className="breadcrumb"><Link to="/">Home</Link><span className="sep">›</span><span>Review Image</span></nav>
+            <div className="page-header"><h2>Review — {displayImageName(image)}</h2><p>Decide how to classify this image.</p></div>
+
+            <div className="review-image-layout">
+                <div className="review-image-left card">
+                    <div className="card-body" style={{ textAlign: 'center' }}>
+                        {step === 'choose' && <img src={storageUrl(image.file_path)} alt={image.filename} style={{ maxWidth: '100%', maxHeight: '65vh', borderRadius: 8 }} />}
+                        {step === 'annotate' && (
+                            <BboxDrawer imageUrl={storageUrl(image.file_path)} onDraw={setBbox} />
+                        )}
+                    </div>
+                    <div className="card-body" style={{ paddingTop: 0, display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        <span className="tag tag-muted">Image #{image.id}</span>
+                        {image.processed ? <span className="tag tag-primary">Processed</span> : <span className="tag tag-muted">Pending</span>}
+                        {image.has_animal === true && <span className="tag tag-info">Has Animal</span>}
+                        {image.has_animal === false && <span className="tag tag-muted">Marked Empty</span>}
+                        {image.camera_id && <span className="tag tag-info">Cam {image.camera_id}</span>}
+                    </div>
+                </div>
+
+                <div className="review-image-right">
+                    {step === 'choose' && (
+                        <div className="card">
+                            <div className="card-header"><h3>What do you see?</h3></div>
+                            <div className="card-body review-action-choices">
+                                <button type="button" className="review-action-btn empty" onClick={confirmEmpty} disabled={saving}>
+                                    <span className="review-action-icon">⬜</span>
+                                    <span>Image is empty</span>
+                                    <span className="review-action-hint">Confirm no animal present</span>
+                                </button>
+                                <button type="button" className="review-action-btn has-animal" onClick={() => setStep('annotate')}>
+                                    <span className="review-action-icon">🐾</span>
+                                    <span>Has animal</span>
+                                    <span className="review-action-hint">Draw a box around the animal</span>
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {step === 'annotate' && (
+                        <div className="card">
+                            <div className="card-header"><h3>Annotate Animal</h3></div>
+                            <div className="card-body">
+                                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>Draw a box around the animal on the image, then fill in the details below.</p>
+                                {bbox && <div className="tag tag-primary" style={{ marginBottom: '1rem' }}>Box drawn ✓</div>}
+                                <div className="review-field">
+                                    <label>Species</label>
+                                    <select className="filter-select" value={species} onChange={(e) => setSpecies(e.target.value)}>
+                                        <option>Spotted-tailed Quoll</option>
+                                        <option>Quoll (unknown sp)</option>
+                                        <option>Red Kangaroo</option>
+                                        <option>Common Wombat</option>
+                                        <option>Short-beaked Echidna</option>
+                                        <option>Tasmanian Devil</option>
+                                        <option>Bennett's Wallaby</option>
+                                        <option>Common Brushtail Possum</option>
+                                        <option>Unknown</option>
+                                        <option>Other</option>
+                                    </select>
+                                </div>
+                                <div className="review-field">
+                                    <label>Individual ID (optional, e.g. 02Q2)</label>
+                                    <input className="filter-select" style={{ width: '100%' }} value={individualId} onChange={(e) => setIndividualId(e.target.value)} placeholder="Leave blank if unknown" />
+                                </div>
+                                <div className="review-field">
+                                    <label>Notes (optional)</label>
+                                    <textarea className="filter-select" style={{ width: '100%', minHeight: 50, resize: 'vertical' }} value={notes} onChange={(e) => setNotes(e.target.value)} />
+                                </div>
+                                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+                                    <button className="btn btn-primary" onClick={submitAnimal} disabled={!bbox || saving}>{saving ? 'Saving...' : 'Save Annotation'}</button>
+                                    <button className="btn btn-outline" onClick={() => setStep('choose')}>Back</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function ReviewEmptyImage() {
+    const { imageId } = useParams();
+    return <Navigate to={`/review-image/${imageId}`} replace />;
+}
+
+/* ============================================================
+   PROFILES — Species & Individuals Explorer (hierarchy)
+   ============================================================ */
 function SpeciesExplorer() {
     const [species, setSpecies] = useState<SpeciesCount[]>([]);
     const [individuals, setIndividuals] = useState<IndividualData[]>([]);
@@ -1067,7 +1910,7 @@ function SpeciesImages() {
                                     {img.has_animal && <div className="image-animal-badge">ANIMAL</div>}
                                 </div>
                                 <div className="image-info">
-                                    <div className="image-filename">{img.filename}</div>
+                                    <div className="image-filename">{displayImageName(img)}</div>
                                     <div className="image-meta">
                                         {img.processed ? <span className="tag tag-primary">Processed</span> : <span className="tag tag-muted">Pending</span>}
                                     </div>
@@ -1082,7 +1925,7 @@ function SpeciesImages() {
                 <div className="lightbox-overlay" onClick={() => setSelected(null)}>
                     <div className="lightbox-content card" onClick={(e) => e.stopPropagation()}>
                         <div className="card-header" style={{ justifyContent: 'space-between' }}>
-                            <h3>{selected.filename}</h3>
+                            <h3>{displayImageName(selected)}</h3>
                             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                                 <label style={{ fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer' }}>
                                     <input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} /> Boxes
@@ -1140,9 +1983,22 @@ function SpeciesImages() {
                                 {selected.has_animal === false && <span className="tag tag-muted">Empty</span>}
                                 {selected.camera_id && <span className="tag tag-info">Cam {selected.camera_id}</span>}
                             </div>
+                            {detections.length > 0 && (
+                                <div style={{ marginBottom: '1rem' }}>
+                                    <div style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.4rem' }}>Detections ({detections.length})</div>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                                        {detections.map((det) => (
+                                            <span key={det.id} className="tag tag-primary" style={{ fontSize: '0.7rem' }}>
+                                                {det.species || 'unknown'} — {det.classification_confidence != null ? (det.classification_confidence * 100).toFixed(1) + '%' : 'N/A'} conf
+                                            </span>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
                             <div style={{ display: 'flex', gap: '0.5rem' }}>
                                 <Link to={`/review-image/${selected.id}`} className="btn btn-primary">Review Image</Link>
                             </div>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.75rem' }}>Use ←/→ to navigate, Esc to close</div>
                         </div>
                     </div>
                 </div>
@@ -1177,332 +2033,338 @@ function SpeciesByIndividual() {
     );
 }
 
+/* ============================================================
+   INDIVIDUAL PROFILE PAGE
+   ============================================================ */
 function IndividualImages() {
     const { speciesKey, individualId } = useParams();
-    const decoded = individualId ? decodeURIComponent(individualId) : '';
+    const decodedId = individualId ? decodeURIComponent(individualId) : '';
+    const decodedSpecies = speciesKey ? decodeURIComponent(speciesKey).replace(/-/g, ' ') : '';
+    
+    const [individual, setIndividual] = useState<IndividualData | null>(null);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        // Fetch the list of individuals and find the specific one matching our ID
+        fetchIndividuals()
+            .then((list) => {
+                const found = list.find((i) => i.individual_id === decodedId);
+                setIndividual(found || null);
+            })
+            .catch(() => {})
+            .finally(() => setLoading(false));
+    }, [decodedId]);
+
+    if (loading) return <LoadingState />;
+
+    // Calculate "Days Active" if we have both first and last seen dates
+    let daysActive = '—';
+    if (individual?.first_seen && individual?.last_seen) {
+        const first = new Date(individual.first_seen).getTime();
+        const last = new Date(individual.last_seen).getTime();
+        const diffDays = Math.ceil((last - first) / (1000 * 3600 * 24));
+        daysActive = diffDays === 0 ? '1 Day' : `${diffDays} Days`;
+    }
+
+    // Dummy map center (Can be updated later to average sightings coords)
+    const mapCenter: [number, number] = [-34.4, 150.3];
 
     return (
-        <div>
-            <nav className="breadcrumb"><Link to="/">Home</Link><span className="sep">›</span><Link to="/individuals">Profiles</Link><span className="sep">›</span><Link to={`/individuals/species/${speciesKey}`}>{speciesKey}</Link><span className="sep">›</span><Link to={`/individuals/species/${speciesKey}/individuals`}>Individuals</Link><span className="sep">›</span><span>{decoded}</span></nav>
-            <div className="page-header"><h2>Individual {decoded}</h2><p>Sightings and images for this individual (list requires backend support)</p></div>
+        <div className="profile-page-wrapper">
+            <div className="profile-container">
+                
+                {/* Breadcrumb Navigation */}
+                <nav className="breadcrumb" style={{ marginBottom: '2rem' }}>
+                    <Link to="/">Home</Link><span className="sep">›</span>
+                    <Link to="/individuals">Profiles</Link><span className="sep">›</span>
+                    <Link to={`/individuals/species/${speciesKey}`}>{decodedSpecies}</Link><span className="sep">›</span>
+                    <Link to={`/individuals/species/${speciesKey}/individuals`}>Individuals</Link><span className="sep">›</span>
+                    <span style={{ fontWeight: 'bold', color: '#16a34a' }}>{decodedId}</span>
+                </nav>
+
+                {/* Main Identity Header */}
+                <div className="profile-header-card">
+                    <div className="profile-identity">
+                        <h1>🐾 {decodedId}</h1>
+                        <p>{decodedSpecies}</p>
+                    </div>
+                    <div>
+                        {/* Assuming active if seen within the last 30 days, otherwise 'Historical' */}
+                        <span className="status-badge">🟢 Active Track</span>
+                    </div>
+                </div>
+
+                {/* Quick Stats Row */}
+                <div className="profile-stats-row">
+                    <div className="profile-stat-box">
+                        <div className="stat-icon-large">👁️</div>
+                        <div className="stat-details">
+                            <div className="label">Total Sightings</div>
+                            <div className="value">{individual?.total_sightings || 0}</div>
+                        </div>
+                    </div>
+                    <div className="profile-stat-box">
+                        <div className="stat-icon-large">📅</div>
+                        <div className="stat-details">
+                            <div className="label">First Seen</div>
+                            <div className="value">
+                                {individual?.first_seen ? new Date(individual.first_seen).toLocaleDateString() : 'Unknown'}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="profile-stat-box">
+                        <div className="stat-icon-large">📍</div>
+                        <div className="stat-details">
+                            <div className="label">Last Seen</div>
+                            <div className="value">
+                                {individual?.last_seen ? new Date(individual.last_seen).toLocaleDateString() : 'Unknown'}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="profile-stat-box">
+                        <div className="stat-icon-large">⏱️</div>
+                        <div className="stat-details">
+                            <div className="label">Duration Tracked</div>
+                            <div className="value">{daysActive}</div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Two Column Layout: Map & Gallery */}
+                <div className="profile-content-grid">
+                    
+                    {/* Left Panel: Sightings Map */}
+                    <div className="content-panel">
+                        <div className="panel-header">Territory & Sightings Map</div>
+                        <div className="panel-body">
+                            <p style={{ color: '#6b7280', fontSize: '0.875rem', marginTop: 0, marginBottom: '1.5rem' }}>
+                                Estimated territory based on camera trap coordinates.
+                            </p>
+                            <div className="profile-map-container">
+                                <MapContainer center={mapCenter} zoom={11} style={{ height: '100%', width: '100%', zIndex: 1 }}>
+                                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="OSM" />
+                                    {/* Mock Marker representing a sighting */}
+                                    <Marker position={mapCenter}>
+                                        <Popup>
+                                            <strong>{decodedId} Sighting</strong><br />
+                                            {individual?.last_seen ? new Date(individual.last_seen).toLocaleDateString() : 'Recent'}
+                                        </Popup>
+                                    </Marker>
+                                </MapContainer>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Right Panel: Recent Captures Gallery */}
+                    <div className="content-panel">
+                        <div className="panel-header">Recent Captures</div>
+                        <div className="panel-body">
+                            {individual?.total_sightings === 0 ? (
+                                <EmptyMsg text="No images available for this individual yet." />
+                            ) : (
+                                <div className="profile-gallery">
+                                    {/* These are placeholder boxes for the UI until a specific endpoint for fetching an individual's images is wired up */}
+                                    <div className="gallery-image-wrapper">
+                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
+                                        <div className="gallery-date-tag">Most Recent</div>
+                                    </div>
+                                    <div className="gallery-image-wrapper">
+                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
+                                        <div className="gallery-date-tag">Archive</div>
+                                    </div>
+                                    <div className="gallery-image-wrapper">
+                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
+                                        <div className="gallery-date-tag">Archive</div>
+                                    </div>
+                                    <div className="gallery-image-wrapper">
+                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
+                                        <div className="gallery-date-tag">First Sighting</div>
+                                    </div>
+                                </div>
+                            )}
+                            <div style={{ marginTop: '1.5rem', textAlign: 'center' }}>
+                                <button className="btn-export" style={{ backgroundColor: '#f3f4f6', color: '#374151', width: '100%', justifyContent: 'center', boxShadow: 'none' }}>
+                                    View All Sightings Data
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
         </div>
     );
 }
 
-function BatchUpload() {
-    const [job, setJob] = useState<JobStatus | null>(null);
-    const [uploading, setUploading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-    const [dragOver, setDragOver] = useState(false);
-    const [collectionName, setCollectionName] = useState('');
-    const folderRef = useRef<HTMLInputElement>(null);
 
-    const folderInfo = selectedFiles.length > 0 ? parseFolderStructure(selectedFiles) : null;
+
+/* ============================================================
+   ADMIN PANEL
+   ============================================================ */
+function AdminPanel() {
+    const [users, setUsers] = useState<UserData[]>([]);
+    const [metrics, setMetrics] = useState<any>(null);
+    const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        if (folderInfo?.collectionName && !collectionName) setCollectionName(folderInfo.collectionName);
-    }, [folderInfo?.collectionName]);
-
-    const addFiles = (files: FileList | File[]) => {
-        const arr = Array.from(files).filter((f) => /\.(jpe?g|png)$/i.test(f.name));
-        setSelectedFiles(arr);
-    };
-
-    const handleDrop = (e: React.DragEvent) => {
-        e.preventDefault();
-        setDragOver(false);
-        if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
-    };
-
-    const handleUpload = async () => {
-        if (selectedFiles.length === 0) return;
-        setUploading(true);
-        setError(null);
-        try {
-            const res = await uploadBatch(selectedFiles, collectionName || undefined);
-            pollJob(res.job_id);
-        } catch (e: any) {
-            setError(e.message);
-            setUploading(false);
-        }
-    };
-
-    const pollJob = useCallback(async (jobId: number) => {
-        try {
-            const s = await fetchJobStatus(jobId);
-            setJob(s);
-            setUploading(false);
-            if (s.status === 'queued' || s.status === 'processing') {
-                setTimeout(() => pollJob(jobId), 2000);
-            }
-        } catch {
-            setUploading(false);
-        }
+        Promise.all([fetchUsers(), fetchSystemMetrics()])
+            .then(([u, m]) => { setUsers(u); setMetrics(m); })
+            .catch(() => {}).finally(() => setLoading(false));
     }, []);
 
+    const onRoleChange = async (userId: number, role: string) => {
+        const updated = await changeUserRole(userId, role);
+        setUsers(users.map((u) => (u.id === userId ? updated : u)));
+    };
+
+    if (loading) return <LoadingState />;
+
     return (
         <>
-            <div className="page-header"><h2>Upload Images</h2><p>Select a collection folder containing camera trap subfolders.</p></div>
-
-            <div
-                className={`dropzone ${dragOver ? 'dragover' : ''}`}
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={handleDrop}
-                onClick={() => folderRef.current?.click()}
-            >
-                <input
-                    ref={folderRef}
-                    type="file"
-                    multiple
-                    accept=".jpg,.jpeg,.png"
-                    style={{ display: 'none' }}
-                    {...({ webkitdirectory: '', directory: '' } as any)}
-                    onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }}
-                />
-                <div className="dropzone-icon">☁️</div>
-                <p className="dropzone-text">Drop folder here or click to browse</p>
-                <button type="button" className="btn btn-primary" onClick={(e) => { e.stopPropagation(); folderRef.current?.click(); }}>Choose Folder</button>
-            </div>
-
-            {folderInfo && selectedFiles.length > 0 && !job && (
-                <div className="upload-summary card">
-                    <div className="card-header"><h3>Folder Summary</h3></div>
-                    <div className="card-body">
-                        <input className="filter-select" style={{ width: '100%' }} value={collectionName} onChange={(e) => setCollectionName(e.target.value)} placeholder="Collection Name" />
-                        <div style={{ marginTop: '1rem' }}>{selectedFiles.length} images found in {folderInfo.cameras.size} cameras.</div>
-                        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem' }}>
-                            <button className="btn btn-primary" onClick={handleUpload} disabled={uploading}>{uploading ? 'Uploading...' : 'Upload & Process'}</button>
-                            <button className="btn btn-outline" onClick={() => setSelectedFiles([])}>Clear</button>
-                        </div>
-                    </div>
+            <AdminPage embedded />
+            <div className="page-header"><h2>Admin Panel</h2><p>System management and user administration</p></div>
+            {metrics && (
+                <div className="stats-grid">
+                    <StatCard icon="📷" value={fmt(metrics.total_images)} label="Images" />
+                    <StatCard icon="🔍" value={fmt(metrics.total_detections)} label="Detections" />
+                    <StatCard icon="👤" value={fmt(metrics.total_users)} label="Users" />
+                    <StatCard icon="⏳" value={fmt(metrics.pending_jobs)} label="Pending Jobs" />
+                    <StatCard icon="💾" value={`${metrics.db_size_mb} MB`} label="DB Size" />
+                    <StatCard icon="📁" value={`${metrics.storage_size_mb} MB`} label="Storage" />
                 </div>
             )}
-
-            {job && (
-                <div className="upload-batch-progress card" style={{ marginTop: '2rem' }}>
-                    <div className="card-header"><h3>Processing Batch...</h3><span className={`tag tag-accent`}>{job.status}</span></div>
-                    <div className="card-body">
-                        <div className="progress-bar-bg"><div className="progress-bar-fill" style={{ width: `${job.percent}%` }} /></div>
-                        <div style={{ textAlign: 'right', fontSize: '0.8rem', marginTop: '0.5rem' }}>{job.percent.toFixed(1)}%</div>
+            <div className="card">
+                <div className="card-header"><h3>Users</h3></div>
+                <div className="card-body">
+                    <div className="table-container">
+                        <table>
+                            <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Active</th><th>Action</th></tr></thead>
+                            <tbody>
+                                {users.map((u) => (
+                                    <tr key={u.id}>
+                                        <td>{u.email}</td>
+                                        <td>{u.full_name || '—'}</td>
+                                        <td><span className="tag tag-primary">{u.role}</span></td>
+                                        <td>{u.is_active ? '✅' : '❌'}</td>
+                                        <td>
+                                            <select className="filter-select" value={u.role} onChange={(e) => onRoleChange(u.id, e.target.value)} style={{ fontSize: '0.75rem' }}>
+                                                <option value="admin">admin</option><option value="researcher">researcher</option><option value="reviewer">reviewer</option>
+                                            </select>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
-            )}
-        </>
-    );
-}
-
-function Reports() {
-    const [report, setReport] = useState<ReportData | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-
-    useEffect(() => { fetchReport().then(setReport).catch((e) => setError(e.message)).finally(() => setLoading(false)); }, []);
-    if (loading) return <LoadingState />;
-    if (error) return <ErrorState message={error} />;
-    if (!report) return null;
-
-    return (
-        <>
-            <div className="page-header"><h2>Reports</h2><p>Data analytics and exports</p></div>
-            <div className="stats-grid">
-                <StatCard icon="📷" value={fmt(report.total_images)} label="Total Images" />
-                <StatCard icon="✅" value={fmt(report.processed_images)} label="Processed" />
-                <StatCard icon="🔍" value={fmt(report.total_detections)} label="Detections" />
-                <StatCard icon="🐾" value={fmt(report.quoll_detections)} label="Quolls" />
             </div>
-            <div className="card" style={{ marginTop: '2rem' }}>
-                <div className="card-header"><h3>Exports</h3></div>
-                <div className="card-body" style={{ display: 'flex', gap: '1rem' }}>
-                    <a href={getExportUrl('csv')} className="btn btn-outline" download>Download CSV Report</a>
-                    <a href={getQuollExportUrl('csv')} className="btn btn-primary" download>Download Quoll Only CSV</a>
+
+            <div className="card" style={{ marginTop: '1.5rem' }}>
+                <div className="card-header"><h3>Dataset Exports</h3></div>
+                <div className="card-body" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                    <a href={getQuollExportUrl('csv')} className="btn btn-primary" download>Export Quoll Detections</a>
+                    <a href={getMetadataExportUrl('csv')} className="btn btn-outline" download>Export Full Metadata</a>
+                    <a href={getExportUrl('json')} className="btn btn-outline" download>Export Report JSON</a>
                 </div>
             </div>
         </>
     );
 }
 
-function ImageReview() {
-    const params = useParams();
-    const id = parseInt(params.detectionId || '0');
-    const [det, setDet] = useState<DetectionDetail | null>(null);
-    const [anns, setAnns] = useState<AnnotationData[]>([]);
-    const [form, setForm] = useState({ is_correct: true, corrected_species: '', notes: '', individual_id: '', flag_for_retraining: false, bbox: undefined as any });
-    const [saving, setSaving] = useState(false);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        if (!id) return;
-        Promise.all([fetchDetectionDetail(id), fetchAnnotations(id)])
-            .then(([d, a]) => { setDet(d); setAnns(a); }).finally(() => setLoading(false));
-    }, [id]);
-
-    const submit = async () => {
-        if (!det) return;
-        setSaving(true);
-        try {
-            const ann = await createAnnotation({
-                detection_id: det.id,
-                is_correct: form.is_correct,
-                corrected_species: form.corrected_species || undefined,
-                notes: form.notes || undefined,
-                individual_id: form.individual_id || undefined,
-                flag_for_retraining: form.flag_for_retraining,
-            });
-            setAnns([ann, ...anns]);
-            setForm({ is_correct: true, corrected_species: '', notes: '', individual_id: '', flag_for_retraining: false, bbox: undefined });
-        } catch { }
-        setSaving(false);
-    };
-
-    if (loading) return <LoadingState />;
-    if (!det) return <div className="empty-state"><h3>Detection not found</h3></div>;
-
-    return (
-        <>
-            <div className="page-header"><h2>Review Detection #{det.id}</h2></div>
-            <div className="chart-grid">
-                <div className="card">
-                    <div className="card-body" style={{ textAlign: 'center' }}>
-                        {det.crop_path && <img src={storageUrl(det.crop_path)} alt="crop" style={{ maxWidth: '100%', borderRadius: 8 }} />}
-                        <div style={{ marginTop: '1rem' }}><strong>Species:</strong> {det.species || 'Unknown'} ({Math.round(det.detection_confidence * 100)}%)</div>
-                    </div>
-                </div>
-                <div className="card">
-                    <div className="card-header"><h3>Annotate</h3></div>
-                    <div className="card-body">
-                        <select className="filter-select" style={{ width: '100%' }} value={String(form.is_correct)} onChange={(e) => setForm({ ...form, is_correct: e.target.value === 'true' })}>
-                            <option value="true">Correct</option><option value="false">Incorrect</option>
-                        </select>
-                        <input className="filter-select" style={{ width: '100%', marginTop: '1rem' }} value={form.individual_id} onChange={(e) => setForm({ ...form, individual_id: e.target.value })} placeholder="Individual ID" />
-                        <textarea className="filter-select" style={{ width: '100%', marginTop: '1rem', minHeight: 80 }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Notes" />
-                        <button className="btn btn-primary" style={{ marginTop: '1rem', width: '100%' }} onClick={submit} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-                    </div>
-                </div>
-            </div>
-        </>
-    );
-}
-
-function ReviewImage() {
-    const { imageId } = useParams();
-    const id = parseInt(imageId || '0');
-    const [image, setImage] = useState<ImageData | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [step, setStep] = useState<'choose' | 'annotate' | 'done'>('choose');
-    const [bbox, setBbox] = useState<any>(null);
-    const [species, setSpecies] = useState('Spotted-tailed Quoll');
-    const [saving, setSaving] = useState(false);
-
-    useEffect(() => {
-        if (!id) return;
-        fetchImageDetail(id).then((data: any) => setImage(data)).catch(() => {}).finally(() => setLoading(false));
-    }, [id]);
-
-    const confirmEmpty = async () => {
-        if (!image) return;
-        setSaving(true);
-        try {
-            await createMissedDetection(image.id, { bbox_x: 0, bbox_y: 0, bbox_w: 0, bbox_h: 0, species: '__confirmed_empty__', flag_for_retraining: false });
-            setStep('done');
-        } catch { }
-        setSaving(false);
-    };
-
-    const submitAnimal = async () => {
-        if (!image || !bbox) return;
-        setSaving(true);
-        try {
-            await createMissedDetection(image.id, { bbox_x: bbox.x, bbox_y: bbox.y, bbox_w: bbox.w, bbox_h: bbox.h, species, flag_for_retraining: true });
-            setStep('done');
-        } catch { }
-        setSaving(false);
-    };
-
-    if (loading) return <LoadingState />;
-    if (!image) return <div className="empty-state"><h3>Image not found</h3></div>;
-    if (step === 'done') return <div className="empty-state"><h3>Review Saved!</h3><Link to="/admin" className="btn btn-primary">Return to Admin</Link></div>;
-
-    return (
-        <div className="review-image-layout card">
-            <div className="card-body" style={{ textAlign: 'center' }}>
-                {step === 'choose' ? (
-                    <>
-                        <img src={storageUrl(image.file_path)} alt="review" style={{ maxWidth: '100%', borderRadius: 8 }} />
-                        <div style={{ marginTop: '2rem', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-                            <button className="btn btn-outline" onClick={confirmEmpty}>Mark as Empty</button>
-                            <button className="btn btn-primary" onClick={() => setStep('annotate')}>Found Animal</button>
-                        </div>
-                    </>
-                ) : (
-                    <>
-                        <BboxDrawer imageUrl={storageUrl(image.file_path)} onDraw={setBbox} />
-                        <div style={{ marginTop: '2rem' }}>
-                            <select className="filter-select" value={species} onChange={(e) => setSpecies(e.target.value)}>
-                                <option>Spotted-tailed Quoll</option><option>Kangaroo</option><option>Wombat</option>
-                            </select>
-                            <button className="btn btn-primary" style={{ marginLeft: '1rem' }} onClick={submitAnimal} disabled={!bbox || saving}>Save Observation</button>
-                        </div>
-                    </>
-                )}
-            </div>
-        </div>
-    );
-}
-
-function BboxDrawer({ imageUrl, onDraw }: { imageUrl: string; onDraw: (bbox: any) => void }) {
-    const imgRef = useRef<HTMLImageElement>(null);
-    const [box, setBox] = useState<any>(null);
-
-    const handleDown = (e: any) => {
-        const rect = imgRef.current!.getBoundingClientRect();
-        setBox({ x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height, w: 0, h: 0 });
-    };
-
-    const handleUp = (e: any) => {
-        if (!box) return;
-        const rect = imgRef.current!.getBoundingClientRect();
-        const endX = (e.clientX - rect.left) / rect.width;
-        const endY = (e.clientY - rect.top) / rect.height;
-        const finalBox = { x: Math.min(box.x, endX), y: Math.min(box.y, endY), w: Math.abs(endX - box.x), h: Math.abs(endY - box.y) };
-        setBox(finalBox);
-        onDraw(finalBox);
-    };
-
-    return (
-        <div style={{ position: 'relative', display: 'inline-block', cursor: 'crosshair' }} onPointerDown={handleDown} onPointerUp={handleUp}>
-            <img ref={imgRef} src={imageUrl} alt="draw" style={{ maxWidth: '100%', borderRadius: 8 }} draggable={false} />
-            {box && <div style={{ position: 'absolute', border: '3px solid #10b981', background: 'rgba(16,185,129,0.2)', left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%` }} />}
-        </div>
-    );
-}
-
+/* ============================================================
+   LOGIN PAGE
+   ============================================================ */
 function LoginPage() {
-    const { login } = useAuth();
+    const { user, login } = useAuth();
+    const [tab, setTab] = useState<'login' | 'register'>('login');
     const [email, setEmail] = useState('');
-    const [pass, setPass] = useState('');
-    const submit = (e: any) => { e.preventDefault(); login(email, pass); };
+    const [password, setPassword] = useState('');
+    const [fullName, setFullName] = useState('');
+    const [role, setRole] = useState('reviewer');
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
+
+    if (user) return <Navigate to="/" />;
+
+    const handleLogin = async (e: React.FormEvent) => {
+        e.preventDefault(); setError(''); setLoading(true);
+        try { await login(email, password); } catch { setError('Invalid credentials'); }
+        setLoading(false);
+    };
+
+    const handleRegister = async (e: React.FormEvent) => {
+        e.preventDefault(); setError(''); setLoading(true);
+        try {
+            await register(email, password, fullName, role);
+            await login(email, password);
+        } catch (err: any) { setError(err.message); }
+        setLoading(false);
+    };
+
     return (
-        <div style={{ maxWidth: 400, margin: '100px auto' }} className="card">
-            <form className="card-body" onSubmit={submit}>
-                <h3>Login</h3>
-                <input className="filter-select" style={{ width: '100%', marginTop: '1rem' }} placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} />
-                <input className="filter-select" style={{ width: '100%', marginTop: '1rem' }} type="password" placeholder="Password" value={pass} onChange={e => setPass(e.target.value)} />
-                <button className="btn btn-primary" style={{ width: '100%', marginTop: '2rem' }}>Sign In</button>
-            </form>
+        <div style={{ maxWidth: 400, margin: '4rem auto' }}>
+            <div className="page-header" style={{ textAlign: 'center' }}><h2>🌿 Wildlife AI Platform</h2><p>Sign in to continue</p></div>
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
+                <button className={`btn ${tab === 'login' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setTab('login')} style={{ flex: 1 }}>Login</button>
+                <button className={`btn ${tab === 'register' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setTab('register')} style={{ flex: 1 }}>Register</button>
+            </div>
+            <div className="card">
+                <div className="card-body">
+                    <form onSubmit={tab === 'login' ? handleLogin : handleRegister}>
+                        {tab === 'register' && (
+                            <div style={{ marginBottom: '1rem' }}>
+                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Full Name</label>
+                                <input className="filter-select" style={{ width: '100%' }} value={fullName} onChange={(e) => setFullName(e.target.value)} />
+                            </div>
+                        )}
+                        <div style={{ marginBottom: '1rem' }}>
+                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Email</label>
+                            <input className="filter-select" style={{ width: '100%' }} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                        </div>
+                        <div style={{ marginBottom: '1rem' }}>
+                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Password</label>
+                            <input className="filter-select" style={{ width: '100%' }} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} />
+                        </div>
+                        {tab === 'register' && (
+                            <div style={{ marginBottom: '1rem' }}>
+                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Role</label>
+                                <select className="filter-select" value={role} onChange={(e) => setRole(e.target.value)}>
+                                    <option value="reviewer">Reviewer</option><option value="researcher">Researcher</option><option value="admin">Admin</option>
+                                </select>
+                            </div>
+                        )}
+                        {error && <p style={{ color: 'var(--danger)', fontSize: '0.85rem', marginBottom: '0.5rem' }}>{error}</p>}
+                        <button className="btn btn-primary" type="submit" disabled={loading} style={{ width: '100%', justifyContent: 'center' }}>
+                            {loading ? 'Please wait...' : tab === 'login' ? 'Sign In' : 'Create Account'}
+                        </button>
+                    </form>
+                </div>
+            </div>
         </div>
     );
 }
 
-function ReviewEmptyImage() { return <Navigate to="/" />; }
-
+/* ============================================================
+   SHARED COMPONENTS
+   ============================================================ */
 function StatCard({ icon, value, label }: { icon: string; value: string; label: string }) {
     return <div className="stat-card"><div className="stat-icon">{icon}</div><div className="stat-value">{value}</div><div className="stat-label">{label}</div></div>;
 }
 
-function LoadingState() { return <div className="loading-container"><div className="spinner" /><span>Loading Wildlife Tracker...</span></div>; }
-function ErrorState({ message }: { message: string }) { return <div className="empty-state"><h3>Connection Error</h3><p>{message}</p></div>; }
-function fmt(n: number): string { return n.toLocaleString(); }
+function LoadingState() {
+    return <div className="loading-container"><div className="spinner" /><span>Loading...</span></div>;
+}
+
+function ErrorState({ message }: { message: string }) {
+    return <div className="empty-state"><div className="icon">⚠️</div><h3>Connection Error</h3><p>{message}</p></div>;
+}
+
+function EmptyMsg({ text }: { text: string }) {
+    return <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '2rem' }}>{text}</div>;
+}
+
+function fmt(n: number): string {
+    return n.toLocaleString();
+}
 
 export default App;

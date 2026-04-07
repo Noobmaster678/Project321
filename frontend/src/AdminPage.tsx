@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { fetchAdminDashboardStats } from './api';
 
 // --- TypeScript Interfaces for Data Safety ---
 interface StatCard {
@@ -19,19 +20,13 @@ interface DashboardData {
   recent_sightings: Sighting[];
 }
 
-const AdminPage: React.FC = () => {
+const AdminPage: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Note: Adjust port 8000 if your FastAPI is running elsewhere
-    // The path /api/admin/dashboard-stats matches your main.py + admin.py setup
-    fetch('http://localhost:8000/api/admin/dashboard-stats')
-      .then((res) => {
-        if (!res.ok) throw new Error('Failed to fetch dashboard data');
-        return res.json();
-      })
-      .then((json) => setData(json))
+    fetchAdminDashboardStats()
+      .then(setData)
       .catch((err) => {
         console.error(err);
         setError(err.message);
@@ -45,30 +40,32 @@ const AdminPage: React.FC = () => {
     <div className="admin-container">
       <style>{inlineCSS}</style>
 
-      {/* Navigation Header */}
-      <header className="nav-header">
-        <div className="logo">🌿 WildlifeTracker</div>
-        <nav className="nav-links">
-          <span>Home</span>
-          <span>Upload</span>
-          <span>Profiles</span>
-          <span>Reports</span>
-          <span>Help</span>
-          <span className="active">Admin</span>
-        </nav>
-        <div className="user-profile">
-          <img src="https://via.placeholder.com/32" alt="Admin Profile" className="avatar" />
-        </div>
-      </header>
+      {!embedded && (
+        <>
+          <header className="nav-header">
+            <div className="logo">🌿 WildlifeTracker</div>
+            <nav className="nav-links">
+              <span>Home</span>
+              <span>Upload</span>
+              <span>Profiles</span>
+              <span>Reports</span>
+              <span>Help</span>
+              <span className="active">Admin</span>
+            </nav>
+            <div className="user-profile">
+              <img src="https://via.placeholder.com/32" alt="Admin Profile" className="avatar" />
+            </div>
+          </header>
 
-      {/* Global Search */}
-      <div className="search-section">
-        <input 
-          type="text" 
-          className="search-bar" 
-          placeholder="Search sightings, locations, or tags..." 
-        />
-      </div>
+          <div className="search-section">
+            <input
+              type="text"
+              className="search-bar"
+              placeholder="Search sightings, locations, or tags..."
+            />
+          </div>
+        </>
+      )}
 
       {/* Activity Summary Section */}
       <section className="dashboard-section">
