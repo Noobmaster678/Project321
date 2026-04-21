@@ -1,16 +1,27 @@
+/** * Base URLs for backend API routing and static file storage access.
+ */
 const API_BASE = '/api';
 const STORAGE_BASE = '/storage';
 
 // ---- Auth token management ------------------------------------------------
 
+// Keep a local reference to the token in memory for fast synchronous access
 let _token: string | null = localStorage.getItem('token');
 
+/**
+ * Updates the JWT token in both memory and the browser's LocalStorage.
+ * Passing null will effectively log the user out by clearing the saved token.
+ * * param token - The JWT access string from the backend, or null to clear.
+ */
 export function setToken(token: string | null) {
     _token = token;
     if (token) localStorage.setItem('token', token);
     else localStorage.removeItem('token');
 }
 
+/**
+ * Retrieves the currently active authentication token.
+ */
 export function getToken(): string | null {
     return _token;
 }
@@ -19,6 +30,14 @@ function authHeaders(): Record<string, string> {
     return _token ? { Authorization: `Bearer ${_token}` } : {};
 }
 
+/**
+ * A custom wrapper around the native browser fetch API.
+ * Automatically intercepts outgoing requests and injects the JWT authentication 
+ * headers so we don't have to manually attach them to every single API call.
+ *  param url - The API endpoint to call.
+ * param init - Optional fetch configuration (method, body, etc.).
+ * returns The standard Promise<Response> object.
+ */
 async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
     const res = await fetch(url, {
         ...init,
@@ -176,6 +195,14 @@ export interface ReportData {
 
 // ---- Auth -----------------------------------------------------------------
 
+/**
+ * Authenticates a user against the backend API.
+ * Note: FastAPI's OAuth2PasswordRequestForm expects data as URL encoded form data, 
+ * not standard JSON, which is why URLSearchParams is used here.
+ * param email - The user's email address (sent as 'username' to the backend).
+ * param password - The user's plain-text password.
+ * returns A Promise resolving to the authenticated UserData profile.
+ */
 export async function login(email: string, password: string): Promise<UserData> {
     const form = new URLSearchParams();
     form.set('username', email);
@@ -187,6 +214,15 @@ export async function login(email: string, password: string): Promise<UserData> 
     return fetchMe();
 }
 
+
+/**
+ * Registers a new user account in the system.
+ * param email - The new user's email address.
+ * param password - The new user's desired password.
+ * param fullName - The user's first and last name.
+ * param role - The authorization role (e.g., 'admin', 'researcher').
+ * returns A Promise resolving to the newly created UserData.
+ */
 export async function register(email: string, password: string, fullName: string, role: string): Promise<UserData> {
     const res = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
@@ -206,6 +242,9 @@ export async function fetchMe(): Promise<UserData> {
     return res.json();
 }
 
+/**
+ * Terminates the user's active session by purging the JWT token from storage.
+ */
 export function logout() {
     setToken(null);
 }
