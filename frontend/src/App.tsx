@@ -241,7 +241,8 @@ function PendingReviewPage() {
                 setFilterImages(res);
             } else if (cat === 'assign-individual') {
                 const res = await fetchDetections({ species: 'quoll', review_status: 'verified', per_page: 50, page, camera_id: cameraFilter });
-                setFilterDetections(res.items);
+                // THE FIX: Filter out photos that ALREADY have an ID assigned!
+                setFilterDetections(res.items.filter((d: any) => !d.individual_id));
             }
         } catch { }
         setFilterLoading(false);
@@ -400,14 +401,18 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
     const [notes, setNotes] = useState('');
     const [lastAction, setLastAction] = useState<string | null>(null);
 
+    // FIX A: Pre-fill the input box if the backend already has an ID saved
     useEffect(() => {
         if (!det) return;
         setDetail(null);
         setCorrectedSpecies('');
-        setIndividualId('');
+        setIndividualId((det as any).individual_id || ''); // Load existing ID immediately
         setNotes('');
         setLastAction(null);
-        fetchDetectionDetail(det.id).then(setDetail).catch(() => {});
+        fetchDetectionDetail(det.id).then((d) => {
+            setDetail(d);
+            if (d.individual_id) setIndividualId(d.individual_id); // Ensure details load it too
+        }).catch(() => {});
     }, [det?.id]);
 
     const advance = () => {
@@ -432,6 +437,7 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
         setSaving(false);
     };
 
+    // FIX B: Bulletproof the API payload to guarantee it saves safely
     const submitIndividualId = async () => {
         if (!det || !individualId) return;
         setSaving(true);
@@ -439,12 +445,16 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
             await createAnnotation({
                 detection_id: det.id,
                 is_correct: true,
+                corrected_species: det.species, // Prevent the backend from accidentally reverting the species
                 individual_id: individualId,
+                flag_for_retraining: false,
                 notes: notes || undefined,
             });
             setLastAction(`Assigned: ${individualId}`);
             setTimeout(advance, 400);
-        } catch { }
+        } catch (e) { 
+            console.error("Failed to assign ID:", e);
+        }
         setSaving(false);
     };
 
@@ -1643,14 +1653,23 @@ function ReviewImage() {
     };
 
     const submitAnimal = async () => {
-        if (!image || !bbox) return;
-        setSaving(true);
-        try {
-            await createMissedDetection(image.id, { bbox_x: bbox.x, bbox_y: bbox.y, bbox_w: bbox.w, bbox_h: bbox.h, species, flag_for_retraining: true });
-            setStep('done');
-        } catch { }
-        setSaving(false);
-    };
+    if (!image || !bbox) return;
+    setSaving(true);
+    try {
+        await createMissedDetection(image.id, { 
+            bbox_x: bbox.x, 
+            bbox_y: bbox.y, 
+            bbox_w: bbox.w, 
+            bbox_h: bbox.h, 
+            species, 
+            flag_for_retraining: true,
+            individual_id: individualId || undefined, // <-- ADD THIS
+            notes: notes || undefined                 // <-- ADD THIS
+        });
+        setStep('done');
+    } catch { }
+    setSaving(false);
+};
 
     if (loading) return <LoadingState />;
     if (!image) return <div className="empty-state"><h3>Image not found</h3></div>;
@@ -2010,24 +2029,98 @@ function SpeciesImages() {
 function SpeciesByIndividual() {
     const { speciesKey } = useParams();
     const decoded = speciesKey ? decodeURIComponent(speciesKey).replace(/-/g, ' ') : '';
+
     const [individuals, setIndividuals] = useState<IndividualData[]>([]);
     const [loading, setLoading] = useState(true);
 
-    useEffect(() => { fetchIndividuals().then((list) => setIndividuals(list.filter((i) => i.species.toLowerCase().includes(decoded.toLowerCase())))).finally(() => setLoading(false)); }, [decoded]);
+    // SEARCH STATE
+    const [searchTerm, setSearchTerm] = useState("");
+
+    useEffect(() => {
+        fetchIndividuals()
+            .then((list) => {
+                const normalize = (str: string) =>
+                    str.toLowerCase().replace(/[-\s]/g, "");
+
+                const filteredList = list.filter((i) =>
+                    normalize(i.species).includes(normalize(decoded)) ||
+                    normalize(decoded).includes(normalize(i.species))
+                );
+
+                setIndividuals(filteredList);
+            })
+            .finally(() => setLoading(false));
+    }, [decoded]);
+
+    // SEARCH FILTER
+    const filteredIndividuals = individuals.filter((ind) => {
+        const query = searchTerm.toLowerCase().trim();
+
+        if (!query) return true;
+
+        // Upgraded: Searches both the ID and the Species
+        return (
+            ind.individual_id.toLowerCase().includes(query) ||
+            ind.species.toLowerCase().includes(query)
+        );
+    });
 
     if (loading) return <LoadingState />;
+
     return (
         <div>
-            <nav className="breadcrumb"><Link to="/">Home</Link><span className="sep">›</span><Link to="/individuals">Profiles</Link><span className="sep">›</span><Link to={`/individuals/species/${speciesKey}`}>{decoded}</Link><span className="sep">›</span><span>By individual</span></nav>
-            <div className="page-header"><h2>Individuals — {decoded}</h2></div>
+            <nav className="breadcrumb">
+                <Link to="/">Home</Link>
+                <span className="sep">›</span>
+                <Link to="/individuals">Profiles</Link>
+                <span className="sep">›</span>
+                <Link to={`/individuals/species/${speciesKey}`}>{decoded}</Link>
+                <span className="sep">›</span>
+                <span>By individual</span>
+            </nav>
+
+            <div className="page-header">
+                <h2>Individuals — {decoded}</h2>
+            </div>
+
+            {/* SEARCH BAR */}
+            <div className="individual-search-bar" style={{ marginBottom: '1.5rem' }}>
+                <input
+                    type="text"
+                    placeholder="Search individual by ID or species..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="individual-search-input"
+                    style={{ width: '100%', maxWidth: '400px', padding: '0.5rem' }}
+                />
+            </div>
+
             <div className="quoll-grid">
-                {individuals.map((ind) => (
-                    <Link key={ind.individual_id} to={`/individuals/species/${speciesKey}/individuals/${encodeURIComponent(ind.individual_id)}`} className="quoll-card">
-                        <div className="quoll-id">🐾 {ind.individual_id}</div>
-                        <div className="quoll-species">{ind.species}</div>
-                        <div className="quoll-stats"><div className="quoll-stat"><div className="label">Sightings</div><div className="value">{ind.total_sightings}</div></div></div>
-                    </Link>
-                ))}
+                {filteredIndividuals.length === 0 ? (
+                    <div className="empty-state">
+                        {individuals.length === 0 
+                            ? "No individuals found for this species." 
+                            : `No individuals matching "${searchTerm}".`}
+                    </div>
+                ) : (
+                    filteredIndividuals.map((ind) => (
+                        <Link
+                            key={ind.individual_id}
+                            to={`/individuals/species/${speciesKey}/individuals/${encodeURIComponent(ind.individual_id)}`}
+                            className="quoll-card"
+                        >
+                            <div className="quoll-id">🐾 {ind.individual_id}</div>
+                            <div className="quoll-species">{ind.species}</div>
+
+                            <div className="quoll-stats">
+                                <div className="quoll-stat">
+                                    <div className="label">Sightings</div>
+                                    <div className="value">{ind.total_sightings}</div>
+                                </div>
+                            </div>
+                        </Link>
+                    ))
+                )}
             </div>
         </div>
     );
@@ -2036,44 +2129,72 @@ function SpeciesByIndividual() {
 /* ============================================================
    INDIVIDUAL PROFILE PAGE
    ============================================================ */
-function IndividualImages() {
+    function IndividualImages() {
     const { speciesKey, individualId } = useParams();
     const decodedId = individualId ? decodeURIComponent(individualId) : '';
     const decodedSpecies = speciesKey ? decodeURIComponent(speciesKey).replace(/-/g, ' ') : '';
     
     const [individual, setIndividual] = useState<IndividualData | null>(null);
+    const [recentCaptures, setRecentCaptures] = useState<Detection[]>([]);
+    const [mapMarkers, setMapMarkers] = useState<{lat: number, lon: number, name: string, date: string}[]>([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        // Fetch the list of individuals and find the specific one matching our ID
-        fetchIndividuals()
-            .then((list) => {
-                const found = list.find((i) => i.individual_id === decodedId);
-                setIndividual(found || null);
-            })
-            .catch(() => {})
-            .finally(() => setLoading(false));
+        // Fetch stats and recent captures
+        Promise.all([
+            fetchIndividuals().then(list => list.find((i) => i.individual_id === decodedId) || null),
+            fetchDetections({ individual_id: decodedId, per_page: 10 }).then(res => res.items).catch(() => [])
+        ])
+        .then(async ([foundIndividual, captures]) => {
+            setIndividual(foundIndividual);
+            setRecentCaptures(captures);
+
+            // Fetch the detailed records for these captures to extract Camera GPS coordinates
+            const details = await Promise.all(captures.map(c => fetchDetectionDetail(c.id).catch(() => null)));
+            const markers: typeof mapMarkers = [];
+            
+            details.forEach(d => {
+                if (d?.camera?.latitude && d?.camera?.longitude) {
+                    markers.push({
+                        lat: d.camera.latitude,
+                        lon: d.camera.longitude,
+                        name: d.camera.name,
+                        date: d.created_at ? new Date(d.created_at).toLocaleDateString() : 'Recent'
+                    });
+                }
+            });
+            setMapMarkers(markers);
+        })
+        .finally(() => setLoading(false));
     }, [decodedId]);
 
     if (loading) return <LoadingState />;
 
-    // Calculate "Days Active" if we have both first and last seen dates
+    // 1. Dynamic Duration & Active Status
     let daysActive = '—';
+    let isActive = false;
+    
     if (individual?.first_seen && individual?.last_seen) {
         const first = new Date(individual.first_seen).getTime();
         const last = new Date(individual.last_seen).getTime();
+        
         const diffDays = Math.ceil((last - first) / (1000 * 3600 * 24));
         daysActive = diffDays === 0 ? '1 Day' : `${diffDays} Days`;
+        
+        // Mark as "Active" if seen within the last 30 days
+        const daysSinceLastSeen = Math.ceil((Date.now() - last) / (1000 * 3600 * 24));
+        isActive = daysSinceLastSeen <= 30;
     }
 
-    // Dummy map center (Can be updated later to average sightings coords)
-    const mapCenter: [number, number] = [-34.4, 150.3];
+    // 2. Dynamic Map Center (Center on their most recent known location, or default if missing)
+    const mapCenter: [number, number] = mapMarkers.length > 0 
+        ? [mapMarkers[0].lat, mapMarkers[0].lon] 
+        : [-34.4, 150.3];
 
     return (
         <div className="profile-page-wrapper">
             <div className="profile-container">
                 
-                {/* Breadcrumb Navigation */}
                 <nav className="breadcrumb" style={{ marginBottom: '2rem' }}>
                     <Link to="/">Home</Link><span className="sep">›</span>
                     <Link to="/individuals">Profiles</Link><span className="sep">›</span>
@@ -2082,19 +2203,21 @@ function IndividualImages() {
                     <span style={{ fontWeight: 'bold', color: '#16a34a' }}>{decodedId}</span>
                 </nav>
 
-                {/* Main Identity Header */}
                 <div className="profile-header-card">
                     <div className="profile-identity">
                         <h1>🐾 {decodedId}</h1>
                         <p>{decodedSpecies}</p>
                     </div>
                     <div>
-                        {/* Assuming active if seen within the last 30 days, otherwise 'Historical' */}
-                        <span className="status-badge">🟢 Active Track</span>
+                        <span className="status-badge" style={{ 
+                            backgroundColor: isActive ? '#dcfce3' : '#f3f4f6', 
+                            color: isActive ? '#166534' : '#4b5563' 
+                        }}>
+                            {isActive ? '🟢 Active Track' : '⚪ Historical Track'}
+                        </span>
                     </div>
                 </div>
 
-                {/* Quick Stats Row */}
                 <div className="profile-stats-row">
                     <div className="profile-stat-box">
                         <div className="stat-icon-large">👁️</div>
@@ -2130,62 +2253,67 @@ function IndividualImages() {
                     </div>
                 </div>
 
-                {/* Two Column Layout: Map & Gallery */}
                 <div className="profile-content-grid">
                     
-                    {/* Left Panel: Sightings Map */}
                     <div className="content-panel">
                         <div className="panel-header">Territory & Sightings Map</div>
                         <div className="panel-body">
                             <p style={{ color: '#6b7280', fontSize: '0.875rem', marginTop: 0, marginBottom: '1.5rem' }}>
-                                Estimated territory based on camera trap coordinates.
+                                Known territory based on camera trap GPS coordinates.
                             </p>
                             <div className="profile-map-container">
-                                <MapContainer center={mapCenter} zoom={11} style={{ height: '100%', width: '100%', zIndex: 1 }}>
+                                <MapContainer center={mapCenter} zoom={mapMarkers.length > 0 ? 13 : 11} style={{ height: '100%', width: '100%', zIndex: 1 }}>
                                     <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="OSM" />
-                                    {/* Mock Marker representing a sighting */}
-                                    <Marker position={mapCenter}>
-                                        <Popup>
-                                            <strong>{decodedId} Sighting</strong><br />
-                                            {individual?.last_seen ? new Date(individual.last_seen).toLocaleDateString() : 'Recent'}
-                                        </Popup>
-                                    </Marker>
+                                    
+                                    {mapMarkers.length > 0 ? (
+                                        mapMarkers.map((marker, i) => (
+                                            <Marker key={i} position={[marker.lat, marker.lon]}>
+                                                <Popup>
+                                                    <strong>{decodedId} Sighting</strong><br />
+                                                    Camera: {marker.name}<br />
+                                                    Date: {marker.date}
+                                                </Popup>
+                                            </Marker>
+                                        ))
+                                    ) : (
+                                        <Marker position={mapCenter}>
+                                            <Popup>No GPS data available yet.</Popup>
+                                        </Marker>
+                                    )}
                                 </MapContainer>
                             </div>
                         </div>
                     </div>
 
-                    {/* Right Panel: Recent Captures Gallery */}
                     <div className="content-panel">
                         <div className="panel-header">Recent Captures</div>
                         <div className="panel-body">
-                            {individual?.total_sightings === 0 ? (
+                            {recentCaptures.length === 0 ? (
                                 <EmptyMsg text="No images available for this individual yet." />
                             ) : (
                                 <div className="profile-gallery">
-                                    {/* These are placeholder boxes for the UI until a specific endpoint for fetching an individual's images is wired up */}
-                                    <div className="gallery-image-wrapper">
-                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
-                                        <div className="gallery-date-tag">Most Recent</div>
-                                    </div>
-                                    <div className="gallery-image-wrapper">
-                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
-                                        <div className="gallery-date-tag">Archive</div>
-                                    </div>
-                                    <div className="gallery-image-wrapper">
-                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
-                                        <div className="gallery-date-tag">Archive</div>
-                                    </div>
-                                    <div className="gallery-image-wrapper">
-                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
-                                        <div className="gallery-date-tag">First Sighting</div>
-                                    </div>
+                                    {recentCaptures.slice(0, 4).map((det, idx) => (
+                                        <div key={det.id} className="gallery-image-wrapper" style={{ overflow: 'hidden' }}>
+                                            {det.crop_path ? (
+                                                <img 
+                                                    src={storageUrl(det.crop_path)} 
+                                                    alt={`Sighting of ${decodedId}`} 
+                                                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                                />
+                                            ) : (
+                                                <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
+                                            )}
+                                            <div className="gallery-date-tag">
+                                                {idx === 0 ? 'Most Recent' : (det.created_at ? new Date(det.created_at).toLocaleDateString() : 'Archive')}
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
                             )}
                             <div style={{ marginTop: '1.5rem', textAlign: 'center' }}>
-                                <button className="btn-export" style={{ backgroundColor: '#f3f4f6', color: '#374151', width: '100%', justifyContent: 'center', boxShadow: 'none' }}>
+                                <Link to={`/detections?individual_id=${encodeURIComponent(decodedId)}`} className="btn-export" style={{ backgroundColor: '#f3f4f6', color: '#374151', width: '100%', justifyContent: 'center', display: 'flex', textDecoration: 'none', boxShadow: 'none' }}>
                                     View All Sightings Data
-                                </button>
+                                </Link>
                             </div>
                         </div>
                     </div>
