@@ -12,79 +12,124 @@ from backend.app.utils.dependencies import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
+# ============================================================
+# REGISTRATION ENDPOINT
+# ============================================================
+
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
-    
-    """
-    Create a new user account with role-based access control.
+    """Create a new user account.
     
     Args:
-        payload (UserCreate): The user registration details (email, password, role).
-        db (AsyncSession): The asynchronous database session dependency.
-        
-    Raises:
-        HTTPException (400): If the email is already registered in the system.
-        HTTPException (400): If an invalid role is provided.
+        payload: User registration data (email, password, full_name, role)
+        db: Database session
         
     Returns:
-        UserOut: The newly created user record (excluding sensitive data).
+        UserOut: The created user profile
+        
+    Raises:
+        HTTPException: 400 if email already exists or invalid role
     """
-    existing = (await db.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+    # Check if email already registered
+    existing_user = (
+        await db.execute(select(User).where(User.email == payload.email))
+    ).scalar_one_or_none()
+    
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
 
-    if payload.role not in ("admin", "researcher", "reviewer"):
-        raise HTTPException(status_code=400, detail="Invalid role")
+    # Validate role
+    valid_roles = ("admin", "researcher", "reviewer")
+    if payload.role not in valid_roles:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}"
+        )
 
-    user = User(
+    # Create new user with hashed password
+    new_user = User(
         email=payload.email,
         full_name=payload.full_name,
         hashed_password=hash_password(payload.password),
         role=payload.role,
     )
-    db.add(user)
+    db.add(new_user)
     await db.flush()
-    await db.refresh(user)
-    return UserOut.model_validate(user)
+    await db.refresh(new_user)
+    
+    return UserOut.model_validate(new_user)
+
+
+# ============================================================
+# LOGIN ENDPOINT
+# ============================================================
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
-    """
-    Authenticate user credentials and return a JWT access token.
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db)
+):
+    """Authenticate user and return JWT access token.
     
     Args:
-        form (OAuth2PasswordRequestForm): Standard OAuth2 form containing username (email) and password.
-        db (AsyncSession): The asynchronous database session dependency.
-        
-    Raises:
-        HTTPException (401): If the email/password combination is invalid.
-        HTTPException (403): If the user account has been disabled by an admin.
+        form_data: OAuth2 form with username (email) and password
+        db: Database session
         
     Returns:
-        TokenResponse: A dictionary containing the JWT access token and user role.
+        TokenResponse: JWT access token and user role
+        
+    Raises:
+        HTTPException: 401 if credentials invalid, 403 if account disabled
     """
-    user = (await db.execute(select(User).where(User.email == form.username))).scalar_one_or_none()
-    if not user or not verify_password(form.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    # Look up user by email (username field contains email)
+    user = (
+        await db.execute(select(User).where(User.email == form_data.username))
+    ).scalar_one_or_none()
+    
+    # Verify credentials
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+    
+    # Check if account is active
     if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account has been disabled"
+        )
 
-    token = create_access_token(data={"sub": str(user.id), "role": user.role})
-    return TokenResponse(access_token=token, token_type="bearer", role=user.role)
+    # Generate JWT token
+    access_token = create_access_token(
+        data={"sub": str(user.id), "role": user.role}
+    )
+    
+    return TokenResponse(
+        access_token=access_token,
+        token_type="bearer",
+        role=user.role
+    )
+
+
+# ============================================================
+# CURRENT USER ENDPOINT
+# ============================================================
 
 
 @router.get("/me", response_model=UserOut)
 async def get_me(user: User = Depends(get_current_user)):
-    """
-    Return the currently authenticated user's profile.
+    """Get the currently authenticated user profile.
     
     Args:
-        user (User): The user object injected by the get_current_user dependency 
-                     after validating the incoming JWT token.
-                     
+        user: Current authenticated user (injected via dependency)
+        
     Returns:
-        UserOut: The serialized user profile data.
+        UserOut: The authenticated user's profile
     """
     return UserOut.model_validate(user)
