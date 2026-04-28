@@ -259,7 +259,8 @@ function PendingReviewPage() {
                 setFilterImages(res);
             } else if (cat === 'assign-individual') {
                 const res = await fetchDetections({ species: 'quoll', review_status: 'verified', per_page: 50, page, camera_id: cameraFilter });
-                setFilterDetections(res.items);
+                // THE FIX: Filter out photos that ALREADY have an ID assigned!
+                setFilterDetections(res.items.filter((d: any) => !d.individual_id));
             }
         } catch { }
         setFilterLoading(false);
@@ -418,14 +419,18 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
     const [notes, setNotes] = useState('');
     const [lastAction, setLastAction] = useState<string | null>(null);
 
+    // FIX A: Pre-fill the input box if the backend already has an ID saved
     useEffect(() => {
         if (!det) return;
         setDetail(null);
         setCorrectedSpecies('');
-        setIndividualId('');
+        setIndividualId((det as any).individual_id || ''); // Load existing ID immediately
         setNotes('');
         setLastAction(null);
-        fetchDetectionDetail(det.id).then(setDetail).catch(() => {});
+        fetchDetectionDetail(det.id).then((d) => {
+            setDetail(d);
+            if (d.individual_id) setIndividualId(d.individual_id); // Ensure details load it too
+        }).catch(() => {});
     }, [det?.id]);
 
     const advance = () => {
@@ -450,6 +455,7 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
         setSaving(false);
     };
 
+    // FIX B: Bulletproof the API payload to guarantee it saves safely
     const submitIndividualId = async () => {
         if (!det || !individualId) return;
         setSaving(true);
@@ -457,12 +463,16 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
             await createAnnotation({
                 detection_id: det.id,
                 is_correct: true,
+                corrected_species: det.species, // Prevent the backend from accidentally reverting the species
                 individual_id: individualId,
+                flag_for_retraining: false,
                 notes: notes || undefined,
             });
             setLastAction(`Assigned: ${individualId}`);
             setTimeout(advance, 400);
-        } catch { }
+        } catch (e) { 
+            console.error("Failed to assign ID:", e);
+        }
         setSaving(false);
     };
 
@@ -1730,14 +1740,23 @@ function ReviewImage() {
     };
 
     const submitAnimal = async () => {
-        if (!image || !bbox) return;
-        setSaving(true);
-        try {
-            await createMissedDetection(image.id, { bbox_x: bbox.x, bbox_y: bbox.y, bbox_w: bbox.w, bbox_h: bbox.h, species, flag_for_retraining: true });
-            setStep('done');
-        } catch { }
-        setSaving(false);
-    };
+    if (!image || !bbox) return;
+    setSaving(true);
+    try {
+        await createMissedDetection(image.id, { 
+            bbox_x: bbox.x, 
+            bbox_y: bbox.y, 
+            bbox_w: bbox.w, 
+            bbox_h: bbox.h, 
+            species, 
+            flag_for_retraining: true,
+            individual_id: individualId || undefined, // <-- ADD THIS
+            notes: notes || undefined                 // <-- ADD THIS
+        });
+        setStep('done');
+    } catch { }
+    setSaving(false);
+};
 
     if (loading) return <LoadingState />;
     if (!image) return <div className="empty-state"><h3>Image not found</h3></div>;
@@ -2575,9 +2594,12 @@ function QuollIndividualCardLink({ speciesKey, ind }: { speciesKey: string; ind:
 function SpeciesByIndividual() {
     const { speciesKey } = useParams();
     const decoded = speciesKey ? decodeURIComponent(speciesKey).replace(/-/g, ' ') : '';
+
     const [individuals, setIndividuals] = useState<IndividualData[]>([]);
     const [loading, setLoading] = useState(true);
     const [reidRuntime, setReidRuntime] = useState<Record<string, unknown> | null>(null);
+
+    const [searchTerm, setSearchTerm] = useState("");
 
     useEffect(() => {
         fetchIndividuals()
@@ -2594,7 +2616,17 @@ function SpeciesByIndividual() {
             .catch(() => setReidRuntime(null));
     }, []);
 
+    const filteredIndividuals = individuals.filter((ind) => {
+        const query = searchTerm.toLowerCase().trim();
+        if (!query) return true;
+        return (
+            ind.individual_id.toLowerCase().includes(query) ||
+            ind.species.toLowerCase().includes(query)
+        );
+    });
+
     if (loading) return <LoadingState />;
+
     return (
         <div className="wt-individuals-list-page">
             <nav className="breadcrumb">
@@ -2609,6 +2641,16 @@ function SpeciesByIndividual() {
             <div className="page-header">
                 <h2 style={{ color: WT_GREEN }}>Individuals — {decoded}</h2>
                 <p className="text-muted">Select a quoll to open its profile (WildlifeTracker-style).</p>
+            </div>
+            <div className="individual-search-bar" style={{ marginBottom: '1.5rem' }}>
+                <input
+                    type="text"
+                    placeholder="Search individual by ID or species..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="individual-search-input"
+                    style={{ width: '100%', maxWidth: '400px', padding: '0.5rem' }}
+                />
             </div>
             {individuals.length === 0 ? (
                 <div className="card" style={{ padding: '1.5rem', maxWidth: 720 }}>
@@ -2644,7 +2686,7 @@ function SpeciesByIndividual() {
                 </div>
             ) : (
                 <div className="wt-quoll-card-grid">
-                    {individuals.map((ind) => (
+                    {filteredIndividuals.map((ind) => (
                         <QuollIndividualCardLink key={ind.individual_id} speciesKey={speciesKey!} ind={ind} />
                     ))}
                 </div>
@@ -2656,12 +2698,14 @@ function SpeciesByIndividual() {
 /* ============================================================
    INDIVIDUAL PROFILE PAGE (WildlifeTracker-style)
    ============================================================ */
-function IndividualImages() {
+    function IndividualImages() {
     const { speciesKey, individualId } = useParams();
     const decodedId = individualId ? decodeURIComponent(individualId) : '';
     const decodedSpecies = speciesKey ? decodeURIComponent(speciesKey).replace(/-/g, ' ') : '';
 
     const [individual, setIndividual] = useState<IndividualData | null>(null);
+    const [recentCaptures, setRecentCaptures] = useState<Detection[]>([]);
+    const [mapMarkers, setMapMarkers] = useState<{lat: number, lon: number, name: string, date: string}[]>([]);
     const [loading, setLoading] = useState(true);
     const [tab, setTab] = useState<'overview' | 'images' | 'movement' | 'notes'>('images');
     const [gallery, setGallery] = useState<IndividualGalleryItem[]>([]);
@@ -2670,13 +2714,28 @@ function IndividualImages() {
     const [reidInfo, setReidInfo] = useState<Record<string, unknown> | null>(null);
 
     useEffect(() => {
-        fetchIndividuals()
-            .then((list) => {
-                const found = list.find((i) => i.individual_id === decodedId);
-                setIndividual(found || null);
-            })
-            .catch(() => {})
-            .finally(() => setLoading(false));
+        Promise.all([
+            fetchIndividuals().then(list => list.find((i) => i.individual_id === decodedId) || null),
+            fetchDetections({ individual_id: decodedId, per_page: 10 }).then(res => res.items).catch(() => [])
+        ])
+        .then(async ([foundIndividual, captures]) => {
+            setIndividual(foundIndividual);
+            setRecentCaptures(captures);
+            const details = await Promise.all(captures.map(c => fetchDetectionDetail(c.id).catch(() => null)));
+            const markers: typeof mapMarkers = [];
+            details.forEach(d => {
+                if (d?.camera?.latitude && d?.camera?.longitude) {
+                    markers.push({
+                        lat: d.camera.latitude,
+                        lon: d.camera.longitude,
+                        name: d.camera.name,
+                        date: d.created_at ? new Date(d.created_at).toLocaleDateString() : 'Recent'
+                    });
+                }
+            });
+            setMapMarkers(markers);
+        })
+        .finally(() => setLoading(false));
     }, [decodedId]);
 
     useEffect(() => {
@@ -2701,14 +2760,23 @@ function IndividualImages() {
     if (loading) return <LoadingState />;
 
     let daysActive = '—';
+    let isActive = false;
+    
     if (individual?.first_seen && individual?.last_seen) {
         const first = new Date(individual.first_seen).getTime();
         const last = new Date(individual.last_seen).getTime();
+        
         const diffDays = Math.ceil((last - first) / (1000 * 3600 * 24));
         daysActive = diffDays === 0 ? '1 Day' : `${diffDays} Days`;
+        
+        // Mark as "Active" if seen within the last 30 days
+        const daysSinceLastSeen = Math.ceil((Date.now() - last) / (1000 * 3600 * 24));
+        isActive = daysSinceLastSeen <= 30;
     }
 
-    const mapCenter: [number, number] = [-34.4, 150.3];
+    const mapCenter: [number, number] = mapMarkers.length > 0
+        ? [mapMarkers[0].lat, mapMarkers[0].lon]
+        : [-34.4, 150.3];
     const heroSrc = gallery[0]?.display_url ?? null;
     const gridSlots: (IndividualGalleryItem | null)[] = [...gallery.slice(0, 12)];
     while (gridSlots.length < 12) gridSlots.push(null);
@@ -2875,19 +2943,35 @@ function IndividualImages() {
                     )}
                     {tab === 'movement' && (
                         <div>
-                            <p className="wt-map-caption">Placeholder territory map (camera coordinates can be wired later).</p>
+                            <p className="wt-map-caption">
+                                {mapMarkers.length > 0
+                                    ? `${mapMarkers.length} camera trap location(s) recorded for this individual.`
+                                    : 'No GPS data yet — territory map will populate as camera traps with coordinates detect this individual.'}
+                            </p>
                             <div className="wt-map-wrap">
-                                <MapContainer center={mapCenter} zoom={11} style={{ height: '320px', width: '100%', zIndex: 1 }}>
+                                <MapContainer center={mapCenter} zoom={mapMarkers.length > 0 ? 13 : 11} style={{ height: '320px', width: '100%', zIndex: 1 }}>
                                     <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="OSM" />
-                                    <Marker position={mapCenter}>
-                                        <Popup>
-                                            <strong>{decodedId}</strong>
-                                            <br />
-                                            {individual?.last_seen
-                                                ? new Date(individual.last_seen).toLocaleDateString()
-                                                : 'Sighting'}
-                                        </Popup>
-                                    </Marker>
+                                    {mapMarkers.length > 0 ? (
+                                        mapMarkers.map((marker, i) => (
+                                            <Marker key={i} position={[marker.lat, marker.lon]}>
+                                                <Popup>
+                                                    <strong>{decodedId} Sighting</strong><br />
+                                                    Camera: {marker.name}<br />
+                                                    Date: {marker.date}
+                                                </Popup>
+                                            </Marker>
+                                        ))
+                                    ) : (
+                                        <Marker position={mapCenter}>
+                                            <Popup>
+                                                <strong>{decodedId}</strong>
+                                                <br />
+                                                {individual?.last_seen
+                                                    ? new Date(individual.last_seen).toLocaleDateString()
+                                                    : 'Sighting'}
+                                            </Popup>
+                                        </Marker>
+                                    )}
                                 </MapContainer>
                             </div>
                         </div>
