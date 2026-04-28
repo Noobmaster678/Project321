@@ -76,6 +76,8 @@ async def test_annotation_individual_assignment(client: AsyncClient, test_user, 
         "individual_id": "02Q2",
     }, headers=auth_header(test_user))
     assert resp.status_code == 201
+    data = resp.json()
+    assert data["individual_id"] == "02Q2"
 
 
 @pytest.mark.asyncio

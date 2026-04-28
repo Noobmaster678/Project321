@@ -1,4 +1,7 @@
 """Dashboard statistics API endpoints."""
+import json
+from pathlib import Path
+from datetime import datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,9 +13,27 @@ from backend.app.models.annotation import Annotation
 from backend.app.models.camera import Camera
 from backend.app.models.collection import Collection
 from backend.app.models.individual import Individual
+from backend.app.models.sighting import Sighting
 from backend.app.schemas.schemas import DashboardStats
 
 router = APIRouter(prefix="/stats", tags=["Statistics"])
+
+_DBG_LOG_PATH = Path("debug-687764.log")
+
+def _dbg_log(hypothesis_id: str, location: str, message: str, data: dict | None = None, run_id: str = "pre-fix") -> None:
+    try:
+        payload = {
+            "sessionId": "687764",
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "timestamp": int(datetime.utcnow().timestamp() * 1000),
+        }
+        _DBG_LOG_PATH.open("a", encoding="utf-8").write(json.dumps(payload) + "\n")
+    except Exception:
+        pass
 
 
 @router.get("/", response_model=DashboardStats)
@@ -101,17 +122,157 @@ async def collection_stats(db: AsyncSession = Depends(get_db)):
     return [{"name": r[0], "image_count": r[1]} for r in rows]
 
 
+def _storage_url(rel: str | None) -> str | None:
+    if not rel:
+        return None
+    return "/storage/" + rel.replace("\\", "/")
+
+
 @router.get("/individuals")
 async def individual_stats(db: AsyncSession = Depends(get_db)):
-    """List all identified individuals with sighting counts."""
-    result = await db.execute(select(Individual).order_by(Individual.individual_id))
-    return [
-        {
-            "individual_id": ind.individual_id,
-            "species": ind.species,
-            "first_seen": ind.first_seen,
-            "last_seen": ind.last_seen,
-            "total_sightings": ind.total_sightings,
-        }
-        for ind in result.scalars().all()
-    ]
+    """List individuals from `individuals` table merged with IDs assigned in review (annotations).
+
+    Uploading images alone does not create rows here; assigning an individual ID on a quoll
+    detection in Review does. CSV import may populate `individuals` + sightings separately.
+    """
+    _dbg_log("H1", "backend/app/api/stats.py:individual_stats", "enter", {"decodedSpeciesFilter": "%quoll%"})
+    try:
+        by_key: dict[str, dict] = {}
+        result = await db.execute(select(Individual).order_by(Individual.individual_id))
+        inds = result.scalars().all()
+        _dbg_log("H1", "backend/app/api/stats.py:individual_stats", "loadedIndividuals", {"count": len(inds)})
+        for ind in inds:
+            by_key[ind.individual_id] = {
+                "individual_id": ind.individual_id,
+                "species": ind.species,
+                "first_seen": ind.first_seen,
+                "last_seen": ind.last_seen,
+                "total_sightings": ind.total_sightings or 0,
+            }
+
+        ann_q = (
+            select(
+                Annotation.individual_id,
+                func.count(Detection.id).label("cnt"),
+                func.min(Image.captured_at).label("first"),
+                func.max(Image.captured_at).label("last"),
+            )
+            .join(Detection, Annotation.detection_id == Detection.id)
+            .join(Image, Detection.image_id == Image.id)
+            .where(
+                Annotation.individual_id.isnot(None),
+                Annotation.individual_id != "",
+                Detection.species.isnot(None),
+                Detection.species.ilike("%quoll%"),
+            )
+            .group_by(Annotation.individual_id)
+        )
+        ann_rows = (await db.execute(ann_q)).all()
+        _dbg_log("H2", "backend/app/api/stats.py:individual_stats", "loadedAnnotationAggregate", {"rows": len(ann_rows)})
+        for row in ann_rows:
+            iid, cnt, first, last = row
+            if not iid:
+                continue
+            ann_cnt = int(cnt)
+            if iid not in by_key:
+                sp = (
+                    await db.execute(
+                        select(Detection.species)
+                        .join(Annotation, Annotation.detection_id == Detection.id)
+                        .where(Annotation.individual_id == iid)
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                by_key[iid] = {
+                    "individual_id": iid,
+                    "species": sp or "Spotted-tailed Quoll",
+                    "first_seen": first,
+                    "last_seen": last,
+                    "total_sightings": ann_cnt,
+                }
+            else:
+                cur = by_key[iid]
+                cur["total_sightings"] = max(cur["total_sightings"], ann_cnt)
+                if first is not None:
+                    if cur["first_seen"] is None or first < cur["first_seen"]:
+                        cur["first_seen"] = first
+                if last is not None:
+                    if cur["last_seen"] is None or last > cur["last_seen"]:
+                        cur["last_seen"] = last
+
+        out = sorted(by_key.values(), key=lambda x: x["individual_id"])
+        _dbg_log("H3", "backend/app/api/stats.py:individual_stats", "returning", {"count": len(out)})
+        return out
+    except Exception as e:
+        _dbg_log("H4", "backend/app/api/stats.py:individual_stats", "exception", {"type": type(e).__name__, "msg": str(e)[:400]})
+        raise
+
+
+@router.get("/individuals/{individual_id}/gallery")
+async def individual_gallery(individual_id: str, db: AsyncSession = Depends(get_db)):
+    """Thumbnails/crops: sightings table first (if Individual row exists), else annotations."""
+    ind_row = (
+        await db.execute(select(Individual).where(Individual.individual_id == individual_id))
+    ).scalar_one_or_none()
+
+    items: list[dict] = []
+    seen: set[tuple[int, int | None]] = set()
+
+    if ind_row:
+        sight_q = (
+            select(Sighting, Image, Detection)
+            .join(Image, Sighting.image_id == Image.id)
+            .outerjoin(Detection, Sighting.detection_id == Detection.id)
+            .where(Sighting.individual_id == ind_row.id)
+            .order_by(Image.captured_at.desc().nulls_last(), Sighting.id.desc())
+        )
+        for sight, img, det in (await db.execute(sight_q)).all():
+            key = (img.id, det.id if det else None)
+            if key in seen:
+                continue
+            seen.add(key)
+            crop_rel = det.crop_path if det else None
+            thumb_rel = img.thumbnail_path
+            display = _storage_url(thumb_rel) or _storage_url(crop_rel)
+            items.append(
+                {
+                    "image_id": img.id,
+                    "detection_id": det.id if det else None,
+                    "captured_at": str(img.captured_at) if img.captured_at else None,
+                    "thumb_url": _storage_url(thumb_rel),
+                    "crop_url": _storage_url(crop_rel),
+                    "display_url": display,
+                }
+            )
+
+    if not items:
+        ann_q = (
+            select(Detection, Image)
+            .join(Image, Detection.image_id == Image.id)
+            .join(Annotation, Annotation.detection_id == Detection.id)
+            .where(Annotation.individual_id == individual_id)
+            .order_by(Image.captured_at.desc().nulls_last(), Detection.id.desc())
+        )
+        for det, img in (await db.execute(ann_q)).all():
+            key = (img.id, det.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            thumb_rel = img.thumbnail_path
+            crop_rel = det.crop_path
+            display = _storage_url(thumb_rel) or _storage_url(crop_rel)
+            items.append(
+                {
+                    "image_id": img.id,
+                    "detection_id": det.id,
+                    "captured_at": str(img.captured_at) if img.captured_at else None,
+                    "thumb_url": _storage_url(thumb_rel),
+                    "crop_url": _storage_url(crop_rel),
+                    "display_url": display,
+                }
+            )
+        src = "annotations" if items else "none"
+    else:
+        src = "sightings"
+
+    return {"individual_id": individual_id, "items": items, "source": src}

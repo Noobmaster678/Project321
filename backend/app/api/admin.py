@@ -20,7 +20,7 @@ from backend.app.models.annotation import Annotation
 from backend.app.models.missed_correction import MissedDetectionCorrection
 from backend.app.models.job import ProcessingJob
 from backend.app.models.model_version import ModelVersion
-from backend.app.schemas.schemas import UserOut, ModelVersionOut, ModelVersionCreate
+from backend.app.schemas.schemas import UserOut, ModelVersionOut, ModelVersionCreate, ReidBackfillRequest
 from backend.app.utils.dependencies import require_role
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -271,6 +271,48 @@ async def activate_model_version(
     await db.flush()
     await db.refresh(mv)
     return ModelVersionOut.model_validate(mv)
+
+
+@router.post("/reid-backfill")
+async def admin_reid_backfill(
+    payload: ReidBackfillRequest,
+    _admin: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-run MegaDescriptor re-ID on existing quoll crops (does not re-run MegaDetector).
+
+    * **missing_only** — only detections with no annotations (same as first-time auto assign).
+    * **refresh_auto** — removes prior `megadescriptor_reid` annotations for quoll crops, then
+      re-infers; skips detections that already have a manual `individual_id` from review.
+
+    Set **run_async** to queue a Celery task (requires Redis + worker on queue `ml`).
+    """
+    if payload.run_async:
+        try:
+            from backend.worker.tasks import reid_backfill_task
+
+            delay = getattr(reid_backfill_task, "delay", None)
+            if callable(delay):
+                async_result = delay(payload.mode, payload.limit)
+                tid = getattr(async_result, "id", None)
+                if tid is not None:
+                    return {
+                        "status": "queued",
+                        "task_id": str(tid),
+                        "mode": payload.mode,
+                        "limit": payload.limit,
+                    }
+        except Exception:
+            pass
+
+    try:
+        from backend.app.services.reid_backfill import run_reid_backfill
+
+        stats = await run_reid_backfill(db, mode=payload.mode, limit=payload.limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return {"status": "completed", **stats}
 
 
 @router.get("/dashboard-stats")

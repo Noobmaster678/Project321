@@ -4,6 +4,8 @@ All settings can be overridden via environment variables or .env file.
 """
 import os
 from pathlib import Path
+from typing import Optional
+
 from pydantic_settings import BaseSettings
 
 
@@ -20,10 +22,9 @@ class Settings(BaseSettings):
     # DATABASE_URL: str = "postgresql+asyncpg://user:pass@localhost/wildlife"  # Postgres for prod
 
     # --- ML Models (stored outside project dir, not version-controlled) ---
-    # --- ML Models (stored outside project dir, not version-controlled) ---
-    MEGADETECTOR_MODEL_PATH: Path = Path(r"C:/Users/Leroy/Desktop/ml_models/megadetector/md_v5a.0.0.pt")
-    AWC135_MODEL_PATH: Path = Path(r"C:/Users/Leroy/Desktop/ml_models/awc135/awc-135-v1.pth")
-    AWC135_LABELS_PATH: Path = Path(r"C:/Users/Leroy/Desktop/ml_models/awc135/labels.txt")
+    MEGADETECTOR_MODEL_PATH: Path = Path(r"C:/Users/Admin/ml_models/megadetector/md_v5a.0.0.pt")
+    AWC135_MODEL_PATH: Path = Path(r"C:/Users/Admin/ml_models/awc135/awc-135-v1.pth")
+    AWC135_LABELS_PATH: Path = Path(r"C:/Users/Admin/ml_models/awc135/labels.txt")
     AWC135_CLASSIFIER_BASE: str = "tf_efficientnet_b5.ns_jft_in1k"
 
     # --- Detection Thresholds ---
@@ -31,6 +32,13 @@ class Settings(BaseSettings):
     CLASSIFICATION_CONFIDENCE_THRESHOLD: float = 0.5  # AWC135 min confidence
     # Matches label format in labels.txt: "Dasyurus sp | Quoll sp"
     TARGET_SPECIES: str = "Quoll"
+
+    # --- Re-ID (MegaDescriptor gallery from scripts/reid_megadescriptor_hf_mvp.py) ---
+    # If REID_GALLERY_PATH is unset, defaults to STORAGE_ROOT/models/megadescriptor_l384_gallery.pt
+    REID_GALLERY_PATH: Optional[Path] = None
+    REID_SIM_THRESHOLD: float = 0.35
+    REID_GAP_THRESHOLD: float = 0.05
+    REID_AUTO_ASSIGN: bool = True
 
     # --- Processing ---
     BATCH_SIZE: int = 8  # Images per GPU batch (RTX 3080 10GB safe)
@@ -60,6 +68,15 @@ class Settings(BaseSettings):
 # Singleton instance
 settings = Settings()
 
+
+def reid_gallery_path() -> Path:
+    """Resolved gallery checkpoint path for automatic quoll re-ID after detection."""
+    if settings.REID_GALLERY_PATH is not None:
+        return settings.REID_GALLERY_PATH
+    return settings.STORAGE_ROOT / "models" / "megadescriptor_l384_gallery.pt"
+
+
 # Ensure storage directories exist
 os.makedirs(settings.STORAGE_ROOT / "thumbnails", exist_ok=True)
 os.makedirs(settings.STORAGE_ROOT / "crops", exist_ok=True)
+os.makedirs(settings.STORAGE_ROOT / "models", exist_ok=True)

@@ -94,6 +94,7 @@ export interface Detection {
     crop_path: string | null;
     review_status: string | null;
     created_at: string | null;
+    annotations?: AnnotationData[];
 }
 
 export interface ReviewQueueCounts {
@@ -117,6 +118,7 @@ export interface AnnotationData {
     corrected_species: string | null;
     is_correct: boolean | null;
     notes: string | null;
+    individual_id?: string | null;
     created_at: string | null;
 }
 
@@ -134,6 +136,23 @@ export interface IndividualData {
     first_seen: string | null;
     last_seen: string | null;
     total_sightings: number;
+    ref_left_detection_id?: number | null;
+    ref_right_detection_id?: number | null;
+}
+
+export interface IndividualGalleryItem {
+    image_id: number;
+    detection_id: number | null;
+    captured_at: string | null;
+    thumb_url: string | null;
+    crop_url: string | null;
+    display_url: string | null;
+}
+
+export interface IndividualGalleryResponse {
+    individual_id: string;
+    items: IndividualGalleryItem[];
+    source: string;
 }
 
 export interface SpeciesCount {
@@ -275,6 +294,40 @@ export async function fetchIndividuals(): Promise<IndividualData[]> {
     return res.json();
 }
 
+export async function fetchIndividualGallery(individualId: string): Promise<IndividualGalleryResponse> {
+    const res = await fetch(
+        `${API_BASE}/stats/individuals/${encodeURIComponent(individualId)}/gallery`,
+    );
+    if (!res.ok) throw new Error('Failed to fetch individual gallery');
+    return res.json();
+}
+
+/** Summary of the offline MegaDescriptor prototype (no inference on server). */
+export async function fetchReidInfo(): Promise<Record<string, unknown>> {
+    const res = await fetch(`${API_BASE}/reid/info`);
+    if (!res.ok) throw new Error('Failed to fetch re-ID info');
+    return res.json();
+}
+
+export async function createIndividual(payload: {
+    individual_id: string;
+    species: string;
+    name?: string;
+    ref_left_detection_id: number;
+    ref_right_detection_id: number;
+}): Promise<IndividualData> {
+    const res = await apiFetch(`${API_BASE}/individuals/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to create individual');
+    }
+    return res.json();
+}
+
 // ---- Images ---------------------------------------------------------------
 
 export async function fetchImages(params: {
@@ -295,11 +348,12 @@ export async function fetchImages(params: {
 
 export async function fetchImagesBySpecies(
     species: string,
-    params: { page?: number; per_page?: number } = {},
+    params: { page?: number; per_page?: number; unassigned_only?: boolean } = {},
 ): Promise<PaginatedResponse<ImageData>> {
     const sp = new URLSearchParams();
     if (params.page) sp.set('page', String(params.page));
     if (params.per_page) sp.set('per_page', String(params.per_page));
+    if (params.unassigned_only) sp.set('unassigned_only', 'true');
     const res = await fetch(`${API_BASE}/images/by-species/${encodeURIComponent(species)}?${sp}`);
     if (!res.ok) throw new Error('Failed to fetch images by species');
     return res.json();
@@ -314,6 +368,7 @@ export async function fetchImageDetail(id: number) {
 export async function uploadBatch(
     files: File[],
     collectionName?: string,
+    cameraCoordinates?: Record<string, { latitude: number; longitude: number }>,
 ): Promise<{ job_id: number; files_received: number }> {
     const CHUNK_SIZE = 200;
     let jobId: number | null = null;
@@ -327,6 +382,9 @@ export async function uploadBatch(
         const relativePaths = chunk.map((f) => (f as any).webkitRelativePath || f.name);
         form.append('relative_paths', JSON.stringify(relativePaths));
         if (collectionName) form.append('collection_name', collectionName);
+        if (cameraCoordinates && Object.keys(cameraCoordinates).length > 0) {
+            form.append('camera_coordinates', JSON.stringify(cameraCoordinates));
+        }
 
         const query = new URLSearchParams();
         if (jobId != null) query.set('job_id', String(jobId));
@@ -335,7 +393,10 @@ export async function uploadBatch(
             : `${API_BASE}/images/upload-batch`;
 
         const res = await apiFetch(url, { method: 'POST', body: form });
-        if (!res.ok) throw new Error('Upload failed');
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Upload failed');
+        }
         const data = await res.json();
         jobId = data.job_id;
         received += data.files_received ?? chunk.length;
@@ -409,7 +470,10 @@ export async function createAnnotation(payload: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new Error('Failed to create annotation');
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).detail || 'Failed to create annotation');
+    }
     return res.json();
 }
 
@@ -466,6 +530,30 @@ export async function fetchSystemMetrics() {
 export async function fetchAdminDashboardStats(): Promise<any> {
     const res = await apiFetch(`${API_BASE}/admin/dashboard-stats`);
     if (!res.ok) throw new Error('Failed to fetch admin dashboard stats');
+    return res.json();
+}
+
+export type ReidBackfillMode = 'missing_only' | 'refresh_auto';
+
+export async function postAdminReidBackfill(body: {
+    mode?: ReidBackfillMode;
+    limit?: number;
+    run_async?: boolean;
+}): Promise<Record<string, unknown>> {
+    const res = await apiFetch(`${API_BASE}/admin/reid-backfill`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            mode: body.mode ?? 'missing_only',
+            limit: body.limit ?? 2000,
+            run_async: body.run_async ?? false,
+        }),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        const d = err as { detail?: string | unknown };
+        throw new Error(typeof d.detail === 'string' ? d.detail : 'Re-ID backfill failed');
+    }
     return res.json();
 }
 

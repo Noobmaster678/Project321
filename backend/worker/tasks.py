@@ -13,9 +13,10 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.worker.celery_app import celery_app
-from backend.app.config import settings
+from backend.app.config import reid_gallery_path, settings
 from backend.app.db.session import async_session_factory, engine
 from backend.app.db.base import Base
+from backend.app.models.annotation import Annotation
 from backend.app.models.image import Image
 from backend.app.models.detection import Detection
 from backend.app.models.job import ProcessingJob
@@ -41,6 +42,62 @@ def _ensure_pipelines():
     if _md_pipeline is None:
         _md_pipeline, _awc_pipeline = _get_pipelines()
     return _md_pipeline, _awc_pipeline
+
+
+def _species_is_quoll(species: str | None) -> bool:
+    if not species:
+        return False
+    s = species.lower()
+    if "quoll" in s:
+        return True
+    target = (settings.TARGET_SPECIES or "").lower().strip()
+    return bool(target and target in s)
+
+
+async def _maybe_auto_reid_quoll(db: AsyncSession, detection: Detection) -> None:
+    """If a MegaDescriptor gallery exists, assign Annotation.individual_id from crop similarity."""
+    if not settings.REID_AUTO_ASSIGN:
+        return
+    if not _species_is_quoll(detection.species):
+        return
+    if not detection.crop_path:
+        return
+    gallery = reid_gallery_path()
+    if not gallery.is_file():
+        return
+    existing = (
+        await db.execute(select(func.count(Annotation.id)).where(Annotation.detection_id == detection.id))
+    ).scalar() or 0
+    if existing > 0:
+        return
+    crop_abs = settings.STORAGE_ROOT / detection.crop_path
+    if not crop_abs.is_file():
+        return
+    try:
+        from backend.worker.pipelines.megadescriptor_reid import predict_crop
+    except ImportError:
+        return
+    try:
+        iid, meta = predict_crop(
+            crop_abs,
+            gallery,
+            settings.REID_SIM_THRESHOLD,
+            settings.REID_GAP_THRESHOLD,
+        )
+    except Exception:
+        return
+    if not iid:
+        return
+    s1 = meta.get("s1", 0.0)
+    gap = meta.get("gap", 0.0)
+    db.add(
+        Annotation(
+            detection_id=detection.id,
+            annotator="megadescriptor_reid",
+            individual_id=iid,
+            notes=f"auto re-ID sim={s1:.3f} gap={gap:.3f}",
+        )
+    )
 
 
 async def _process_single_image(db: AsyncSession, image: Image, md, awc):
@@ -98,6 +155,8 @@ async def _process_single_image(db: AsyncSession, image: Image, md, awc):
             crop_path=str(crop_path.relative_to(settings.STORAGE_ROOT)) if crop_path and crop_path.exists() else None,
         )
         db.add(detection)
+        await db.flush()
+        await _maybe_auto_reid_quoll(db, detection)
 
     image.processed = True
 
@@ -197,3 +256,19 @@ def process_image_task(self, image_id: int):
 def process_batch_task(self, job_id: int, image_ids: list[int]):
     asyncio.run(_run_process_batch(job_id, image_ids))
     return {"job_id": job_id, "processed": len(image_ids)}
+
+
+async def _run_reid_backfill_celery(mode: str, limit: int):
+    """Celery entry: same DB logic as POST /api/admin/reid-backfill (sync path)."""
+    from backend.app.services.reid_backfill import run_reid_backfill
+
+    async with async_session_factory() as db:
+        stats = await run_reid_backfill(db, mode=mode, limit=limit)
+        await db.commit()
+        return stats
+
+
+@celery_app.task(name="backend.worker.tasks.reid_backfill_task", bind=True)
+def reid_backfill_task(self, mode: str = "missing_only", limit: int = 2000):
+    stats = asyncio.run(_run_reid_backfill_celery(mode, limit))
+    return {"status": "completed", **stats}

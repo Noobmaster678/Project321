@@ -28,6 +28,7 @@ try:
         task_routes={
             "backend.worker.tasks.process_image_task": {"queue": "ml"},
             "backend.worker.tasks.process_batch_task": {"queue": "ml"},
+            "backend.worker.tasks.reid_backfill_task": {"queue": "ml"},
         },
     )
 

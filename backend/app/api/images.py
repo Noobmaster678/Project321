@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File, Form
-from sqlalchemy import select, func
+from sqlalchemy import select, func, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 import json
@@ -13,6 +13,7 @@ from backend.app.config import settings
 from backend.app.db.session import get_db, async_session_factory
 from backend.app.models.image import Image
 from backend.app.models.detection import Detection
+from backend.app.models.annotation import Annotation
 from backend.app.models.missed_correction import MissedDetectionCorrection
 from backend.app.models.camera import Camera
 from backend.app.models.collection import Collection
@@ -177,7 +178,11 @@ async def get_image(image_id: int, db: AsyncSession = Depends(get_db)):
     query = (
         select(Image)
         .where(Image.id == image_id)
-        .options(selectinload(Image.camera), selectinload(Image.collection), selectinload(Image.detections))
+        .options(
+            selectinload(Image.camera),
+            selectinload(Image.collection),
+            selectinload(Image.detections).selectinload(Detection.annotations),
+        )
     )
     image = (await db.execute(query)).scalar_one_or_none()
     if not image:
@@ -217,15 +222,32 @@ async def images_by_species(
     species: str,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
+    unassigned_only: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ):
-    """Find images that contain detections of a specific species."""
+    """Find images that contain detections of a specific species.
+
+    When ``unassigned_only`` is True, only images whose detections have *no*
+    annotation with an ``individual_id`` assigned are returned.
+    """
     query = (
         select(Image)
         .join(Detection, Detection.image_id == Image.id)
         .where(Detection.species.ilike(f"%{species}%"))
         .distinct()
     )
+
+    if unassigned_only:
+        assigned_subq = (
+            select(Detection.image_id)
+            .join(Annotation, Annotation.detection_id == Detection.id)
+            .where(
+                Detection.species.ilike(f"%{species}%"),
+                Annotation.individual_id.isnot(None),
+            )
+        )
+        query = query.where(Image.id.not_in(assigned_subq))
+
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
@@ -311,6 +333,38 @@ async def _get_or_create_camera(db: AsyncSession, name: str, cache: dict[str, in
     return cam.id
 
 
+def _parse_camera_coordinates(raw: str | None) -> dict[str, dict[str, float]]:
+    """Parse and validate per-camera coordinates from form JSON."""
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid camera_coordinates payload") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="camera_coordinates must be an object")
+
+    parsed: dict[str, dict[str, float]] = {}
+    for camera_name, coords in payload.items():
+        if not isinstance(camera_name, str) or not camera_name.strip():
+            raise HTTPException(status_code=400, detail="camera_coordinates keys must be camera folder names")
+        if not isinstance(coords, dict):
+            raise HTTPException(status_code=400, detail=f"Coordinates for camera '{camera_name}' must be an object")
+        lat = coords.get("latitude")
+        lon = coords.get("longitude")
+        if lat is None or lon is None:
+            raise HTTPException(status_code=400, detail=f"Missing coordinates for camera '{camera_name}'")
+        try:
+            lat_f = float(lat)
+            lon_f = float(lon)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid coordinates for camera '{camera_name}'") from exc
+        if lat_f < -90 or lat_f > 90 or lon_f < -180 or lon_f > 180:
+            raise HTTPException(status_code=400, detail=f"Coordinates out of range for camera '{camera_name}'")
+        parsed[camera_name] = {"latitude": lat_f, "longitude": lon_f}
+    return parsed
+
+
 async def _get_or_create_collection(db: AsyncSession, name: str, cache: dict[str, int]) -> int:
     """Find or create a Collection by name, using a local cache."""
     if name in cache:
@@ -331,6 +385,7 @@ async def _ensure_deployment(
     camera_id: int,
     collection_id: int | None,
     cache: dict[tuple[int, int | None], int],
+    coords: dict[str, float] | None = None,
 ) -> int:
     """Find or create a Deployment for a camera+collection pair."""
     key = (camera_id, collection_id)
@@ -342,9 +397,17 @@ async def _ensure_deployment(
     )
     row = (await db.execute(q)).scalar_one_or_none()
     if row:
+        if coords:
+            row.latitude = coords["latitude"]
+            row.longitude = coords["longitude"]
         cache[key] = row.id
         return row.id
-    dep = Deployment(camera_id=camera_id, collection_id=collection_id)
+    dep = Deployment(
+        camera_id=camera_id,
+        collection_id=collection_id,
+        latitude=coords["latitude"] if coords else None,
+        longitude=coords["longitude"] if coords else None,
+    )
     db.add(dep)
     await db.flush()
     cache[key] = dep.id
@@ -356,6 +419,7 @@ async def upload_batch(
     files: list[UploadFile] = File(...),
     relative_paths: str | None = Form(None),
     collection_name: str | None = Form(None),
+    camera_coordinates: str | None = Form(None),
     camera_id: int | None = None,
     collection_id: int | None = None,
     job_id: int | None = None,
@@ -373,6 +437,16 @@ async def upload_batch(
             paths_list = json.loads(relative_paths)
         except (json.JSONDecodeError, TypeError):
             paths_list = []
+    camera_coords_map = _parse_camera_coordinates(camera_coordinates)
+    detected_camera_folders: set[str] = set()
+    for rel in paths_list:
+        cam_name = _extract_camera_name(rel)
+        if cam_name:
+            detected_camera_folders.add(cam_name)
+    if detected_camera_folders:
+        missing = sorted(cam for cam in detected_camera_folders if cam not in camera_coords_map)
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Missing coordinates for camera folders: {', '.join(missing)}")
 
     camera_cache: dict[str, int] = {}
     collection_cache: dict[str, int] = {}
@@ -400,9 +474,16 @@ async def upload_batch(
                 file_collection_id = await _get_or_create_collection(db, col_name, collection_cache)
             if cam_name and file_camera_id is None:
                 file_camera_id = await _get_or_create_camera(db, cam_name, camera_cache)
+                coords = camera_coords_map.get(cam_name)
+                if coords:
+                    cam_row = (await db.execute(select(Camera).where(Camera.id == file_camera_id))).scalar_one_or_none()
+                    if cam_row:
+                        cam_row.latitude = coords["latitude"]
+                        cam_row.longitude = coords["longitude"]
 
         if file_camera_id is not None:
-            await _ensure_deployment(db, file_camera_id, file_collection_id, deployment_cache)
+            coords = camera_coords_map.get(cam_name) if rel_path_from_browser else None
+            await _ensure_deployment(db, file_camera_id, file_collection_id, deployment_cache, coords)
 
         dest, rel_path, saved_name = await _reserve_unique_upload_path(db, use_path, reserved_rel_paths)
         dest.parent.mkdir(parents=True, exist_ok=True)

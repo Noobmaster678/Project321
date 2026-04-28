@@ -57,6 +57,26 @@ async def test_get_image_detail(client: AsyncClient, sample_data):
 
 
 @pytest.mark.asyncio
+async def test_get_image_detail_includes_detection_annotations(client: AsyncClient, test_user, sample_data):
+    det = sample_data["detections"][0]
+    img_id = det.image_id
+    await client.post("/api/annotations/", json={
+        "detection_id": det.id,
+        "is_correct": True,
+        "individual_id": "01Q1",
+    }, headers=auth_header(test_user))
+
+    resp = await client.get(f"/api/images/{img_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "detections" in data
+    found = next((d for d in data["detections"] if d["id"] == det.id), None)
+    assert found is not None
+    assert "annotations" in found
+    assert any(a.get("individual_id") == "01Q1" for a in (found["annotations"] or []))
+
+
+@pytest.mark.asyncio
 async def test_get_image_not_found(client: AsyncClient):
     resp = await client.get("/api/images/9999")
     assert resp.status_code == 404

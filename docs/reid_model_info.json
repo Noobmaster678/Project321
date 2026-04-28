@@ -1,0 +1,24 @@
+{
+  "model_name": "BVRA MegaDescriptor-L-384 (frozen backbone)",
+  "model_source": "https://huggingface.co/BVRA/MegaDescriptor-L-384",
+  "license_note": "CC BY-NC 4.0 — suitable for research/university demo; check terms for commercial use.",
+  "training_data": "Ecologist-labelled quoll crops; five focal IDs with ≥40 crops each after quality filters (min short side, blur variance). Long-tail individuals excluded from this MVP gallery.",
+  "method": "Per-ID prototype = L2-normalized mean of training embeddings; query classified by cosine similarity to prototypes. Optional UNKNOWN if top1 similarity or top1−top2 gap is below tuned thresholds.",
+  "metrics_closed_set_rank1": "≈61–69% (held-out test crops, varies slightly with split/filters)",
+  "metrics_with_unknown_gate": "When the system abstains on uncertain matches (UNKNOWN), accuracy on accepted predictions is typically ≈84–91% depending on thresholds; trade-off: higher precision → more UNKNOWNs.",
+  "why_not_higher": [
+    "Small number of identities but high within-class variation (IR vs daylight, partial body, blur).",
+    "Frozen generic animal re-ID features are not fine-tuned on this quoll population.",
+    "Single mean prototype per ID loses multi-modal appearance (pose, lighting).",
+    "Some pairs are visually confusable (see confusion matrix in evaluation logs)."
+  ],
+  "demo_thresholds_suggested": {
+    "sim_threshold": 0.35,
+    "gap_threshold": 0.05,
+    "note": "Tune with scripts/reid_megadescriptor_hf_mvp.py --sweep-thresholds"
+  },
+  "scripts": [
+    "scripts/reid_megadescriptor_hf_mvp.py — train gallery + sweep thresholds",
+    "scripts/train_megadescriptor_5quolls.py — smaller ResNet baseline on 5 folders"
+  ]
+}

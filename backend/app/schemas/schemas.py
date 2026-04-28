@@ -1,7 +1,8 @@
 """Pydantic schemas for API request/response models."""
 from datetime import datetime, date
+from typing import Any, Literal, Optional
+
 from pydantic import BaseModel, Field
-from typing import Optional, Any
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +86,10 @@ class DetectionOut(DetectionBase):
     model_config = {"from_attributes": True}
 
 
+class DetectionWithAnnotationsOut(DetectionOut):
+    annotations: list["AnnotationOut"] = []
+
+
 class DetectionDetail(DetectionOut):
     """Detection with nested image, camera, and annotations."""
     image: Optional["ImageOut"] = None
@@ -119,6 +124,7 @@ class AnnotationOut(BaseModel):
     corrected_species: Optional[str] = None
     is_correct: Optional[bool] = None
     notes: Optional[str] = None
+    individual_id: Optional[str] = None
     created_at: Optional[datetime] = None
     model_config = {"from_attributes": True}
 
@@ -150,7 +156,7 @@ class ImageOut(ImageBase):
 class ImageDetail(ImageOut):
     camera: Optional[CameraOut] = None
     collection: Optional[CollectionOut] = None
-    detections: list[DetectionOut] = []
+    detections: list[DetectionWithAnnotationsOut] = []
 
 
 class MissedDetectionCreate(BaseModel):
@@ -185,11 +191,18 @@ class IndividualBase(BaseModel):
     name: Optional[str] = None
 
 
+class IndividualCreate(IndividualBase):
+    ref_left_detection_id: int
+    ref_right_detection_id: int
+
+
 class IndividualOut(IndividualBase):
     id: int
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
     total_sightings: int = 0
+    ref_left_detection_id: Optional[int] = None
+    ref_right_detection_id: Optional[int] = None
     model_config = {"from_attributes": True}
 
 
@@ -318,6 +331,14 @@ class ModelVersionOut(BaseModel):
     notes: Optional[str] = None
     created_at: Optional[datetime] = None
     model_config = {"from_attributes": True}
+
+
+class ReidBackfillRequest(BaseModel):
+    """Admin: re-run MegaDescriptor on stored quoll crops (see /api/admin/reid-backfill)."""
+
+    mode: Literal["missing_only", "refresh_auto"] = "missing_only"
+    limit: int = Field(default=2000, ge=1, le=50_000)
+    run_async: bool = False
 
 
 # ---------------------------------------------------------------------------

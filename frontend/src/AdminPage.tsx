@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { fetchAdminDashboardStats } from './api';
+import { fetchAdminDashboardStats, postAdminReidBackfill, type ReidBackfillMode } from './api';
 
 // --- TypeScript Interfaces for Data Safety ---
 interface StatCard {
@@ -23,6 +23,11 @@ interface DashboardData {
 const AdminPage: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reidMode, setReidMode] = useState<ReidBackfillMode>('missing_only');
+  const [reidLimit, setReidLimit] = useState(2000);
+  const [reidAsync, setReidAsync] = useState(false);
+  const [reidBusy, setReidBusy] = useState(false);
+  const [reidMsg, setReidMsg] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAdminDashboardStats()
@@ -78,6 +83,84 @@ const AdminPage: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
               <p className="stat-label">{stat.label}</p>
             </div>
           ))}
+        </div>
+      </section>
+
+      <section className="dashboard-section">
+        <h3 className="section-title">Quoll re-ID backfill</h3>
+        <p style={{ color: '#666', fontSize: 14, lineHeight: 1.5, marginTop: 0, maxWidth: 720 }}>
+          Re-run MegaDescriptor on <strong>existing quoll crops</strong> (no MegaDetector). Requires{' '}
+          <code>storage/models/megadescriptor_l384_gallery.pt</code> and torch/timm on the API process (or Celery worker
+          if you use <em>Queue on worker</em>).
+        </p>
+        <div className="reid-backfill-panel">
+          <label className="reid-label">
+            Mode
+            <select
+              className="reid-select"
+              value={reidMode}
+              onChange={(e) => setReidMode(e.target.value as ReidBackfillMode)}
+              disabled={reidBusy}
+            >
+              <option value="missing_only">Missing only — detections with no annotations</option>
+              <option value="refresh_auto">Refresh auto — replace megadescriptor_reid labels; keep manual IDs</option>
+            </select>
+          </label>
+          <label className="reid-label">
+            Max detections
+            <input
+              type="number"
+              className="reid-input"
+              min={1}
+              max={50000}
+              value={reidLimit}
+              onChange={(e) => setReidLimit(Number(e.target.value) || 2000)}
+              disabled={reidBusy}
+            />
+          </label>
+          <label className="reid-check">
+            <input
+              type="checkbox"
+              checked={reidAsync}
+              onChange={(e) => setReidAsync(e.target.checked)}
+              disabled={reidBusy}
+            />
+            Queue on worker (Celery <code>ml</code> queue)
+          </label>
+          <button
+            type="button"
+            className="reid-run-btn"
+            disabled={reidBusy}
+            onClick={async () => {
+              setReidBusy(true);
+              setReidMsg(null);
+              try {
+                const out = await postAdminReidBackfill({
+                  mode: reidMode,
+                  limit: reidLimit,
+                  run_async: reidAsync,
+                });
+                if (out.status === 'queued') {
+                  setReidMsg(`Queued task ${out.task_id ?? ''}. Check Celery worker logs.`);
+                } else {
+                  setReidMsg(
+                    `Done: assigned ${String(out.assigned ?? 0)}, unknown ${String(out.unknown ?? 0)}, skipped ${String(out.skipped ?? 0)}, errors ${String(out.errors ?? 0)} (candidates ${String(out.candidates ?? 0)}).`,
+                  );
+                }
+              } catch (e) {
+                setReidMsg(e instanceof Error ? e.message : 'Backfill failed');
+              } finally {
+                setReidBusy(false);
+              }
+            }}
+          >
+            {reidBusy ? 'Running…' : 'Run re-ID backfill'}
+          </button>
+          {reidMsg && (
+            <p className="reid-result" role="status">
+              {reidMsg}
+            </p>
+          )}
         </div>
       </section>
 
@@ -274,6 +357,47 @@ const inlineCSS = `
     border-radius: 8px; 
     border: 1px dashed #ddd; 
   }
+
+  .reid-backfill-panel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 16px;
+    margin-top: 16px;
+    padding: 20px;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 12px;
+    max-width: 900px;
+  }
+  .reid-label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #444; font-weight: 600; }
+  .reid-select, .reid-input {
+    min-width: 200px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+    font-size: 14px;
+  }
+  .reid-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #555;
+    cursor: pointer;
+  }
+  .reid-run-btn {
+    background: #1b4332;
+    color: #fff;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .reid-run-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .reid-result { flex-basis: 100%; margin: 0; font-size: 13px; color: #333; line-height: 1.5; }
 `;
 
 export default AdminPage;

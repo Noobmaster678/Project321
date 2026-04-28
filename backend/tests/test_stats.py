@@ -47,3 +47,20 @@ async def test_individual_stats_empty(client: AsyncClient):
     resp = await client.get("/api/stats/individuals")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_reid_info(client: AsyncClient):
+    resp = await client.get("/api/reid/info")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "model_name" in data
+
+
+@pytest.mark.asyncio
+async def test_individual_gallery_unknown_id(client: AsyncClient):
+    resp = await client.get("/api/stats/individuals/__no_such_quoll__/gallery")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["items"] == []
+    assert data["source"] == "none"

@@ -9,11 +9,11 @@ import {
     fetchSpeciesCounts, fetchReport, fetchDetectionDetail, fetchAnnotations, fetchDetections,
     createAnnotation, uploadBatch, fetchJobStatus, fetchUsers, changeUserRole,
     fetchSystemMetrics, register, getExportUrl, getQuollExportUrl, getMetadataExportUrl, fetchImagesBySpecies, fetchImageDetail,
-    storageUrl, createMissedDetection, fetchReviewQueue,
+    storageUrl, createMissedDetection, fetchReviewQueue, fetchIndividualGallery, fetchReidInfo, createIndividual,
     type DashboardStats, type ImageData, type IndividualData, type CollectionStat,
     type CameraStat, type SpeciesCount, type PaginatedResponse, type ReportData,
     type DetectionDetail, type AnnotationData, type JobStatus, type UserData, type Detection,
-    type ReviewQueueCounts,
+    type ReviewQueueCounts, type IndividualGalleryItem,
 } from './api';
 import './index.css';
 import AdminPage from './AdminPage';
@@ -27,6 +27,24 @@ L.Icon.Default.mergeOptions({
 });
 
 const CHART_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+
+const WT_GREEN = '#2e7d32';
+
+const SPOTTED_QUOLL_OVERVIEW =
+    'The spotted-tailed quoll (Dasyurus maculatus) is mainland Australia’s largest native marsupial carnivore. ' +
+    'It occupies forest and woodland habitats, is largely nocturnal, and is listed as vulnerable in parts of its range. ' +
+    'Camera traps help monitor individuals using natural spot patterns and repeated captures across sites.';
+
+/** Align with SpeciesExplorer: URL slug decodes to e.g. "dasyurus sp | quoll sp" while DB may say "Spotted-tailed Quoll". */
+function individualMatchesSpeciesPage(ind: IndividualData, speciesKeyDecoded: string): boolean {
+    const d = speciesKeyDecoded.toLowerCase().trim();
+    const sp = ind.species.toLowerCase();
+    if (!d) return true;
+    if (sp.includes(d) || d.includes(sp)) return true;
+    if (/\bquoll\b/.test(d) && /\bquoll\b/.test(sp)) return true;
+    if (d.includes('dasyurus') && (sp.includes('quoll') || sp.includes('dasyurus'))) return true;
+    return false;
+}
 
 /** Show Camera / Filename instead of just filename to disambiguate Reconyx images */
 function displayImageName(img: { filename: string; file_path: string }): string {
@@ -1021,6 +1039,11 @@ function parseFolderStructure(files: File[]) {
     return { collectionName, cameras };
 }
 
+type CameraCoordinateInput = {
+    latitude: string;
+    longitude: string;
+};
+
 function BatchUpload() {
     const [job, setJob] = useState<JobStatus | null>(null);
     const [uploading, setUploading] = useState(false);
@@ -1028,6 +1051,7 @@ function BatchUpload() {
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
     const [dragOver, setDragOver] = useState(false);
     const [collectionName, setCollectionName] = useState('');
+    const [cameraCoordinates, setCameraCoordinates] = useState<Record<string, CameraCoordinateInput>>({});
     const folderRef = useRef<HTMLInputElement>(null);
 
     const folderInfo = selectedFiles.length > 0 ? parseFolderStructure(selectedFiles) : null;
@@ -1035,6 +1059,20 @@ function BatchUpload() {
     useEffect(() => {
         if (folderInfo?.collectionName && !collectionName) setCollectionName(folderInfo.collectionName);
     }, [folderInfo?.collectionName]);
+
+    useEffect(() => {
+        if (!folderInfo) {
+            setCameraCoordinates({});
+            return;
+        }
+        setCameraCoordinates((prev) => {
+            const next: Record<string, CameraCoordinateInput> = {};
+            for (const cam of folderInfo.cameras.keys()) {
+                next[cam] = prev[cam] || { latitude: '', longitude: '' };
+            }
+            return next;
+        });
+    }, [folderInfo?.cameras, selectedFiles.length]);
 
     const addFiles = (files: FileList | File[]) => {
         const arr = Array.from(files).filter((f) => /\.(jpe?g|png)$/i.test(f.name));
@@ -1049,10 +1087,36 @@ function BatchUpload() {
 
     const handleUpload = async () => {
         if (selectedFiles.length === 0) return;
+        const cameraPayload: Record<string, { latitude: number; longitude: number }> = {};
+        if (folderInfo && folderInfo.cameras.size > 0) {
+            for (const cam of folderInfo.cameras.keys()) {
+                const latRaw = cameraCoordinates[cam]?.latitude?.trim();
+                const lonRaw = cameraCoordinates[cam]?.longitude?.trim();
+                if (!latRaw || !lonRaw) {
+                    setError(`Enter latitude and longitude for camera folder "${cam}".`);
+                    return;
+                }
+                const latitude = Number(latRaw);
+                const longitude = Number(lonRaw);
+                if (Number.isNaN(latitude) || latitude < -90 || latitude > 90) {
+                    setError(`Latitude for "${cam}" must be a number between -90 and 90.`);
+                    return;
+                }
+                if (Number.isNaN(longitude) || longitude < -180 || longitude > 180) {
+                    setError(`Longitude for "${cam}" must be a number between -180 and 180.`);
+                    return;
+                }
+                cameraPayload[cam] = { latitude, longitude };
+            }
+        }
         setUploading(true);
         setError(null);
         try {
-            const res = await uploadBatch(selectedFiles, collectionName || undefined);
+            const res = await uploadBatch(
+                selectedFiles,
+                collectionName || undefined,
+                Object.keys(cameraPayload).length ? cameraPayload : undefined,
+            );
             pollJob(res.job_id);
         } catch (e: any) {
             const msg = e?.message?.includes('fetch')
@@ -1130,11 +1194,34 @@ function BatchUpload() {
                         {folderInfo.cameras.size > 0 && (
                             <div className="upload-camera-list">
                                 <h4>Cameras</h4>
+                                <div className="upload-coord-hint">Image metadata has no GPS. Enter coordinates for each camera folder.</div>
                                 <div className="upload-camera-grid">
                                     {Array.from(folderInfo.cameras.entries()).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })).map(([cam, count]) => (
                                         <div key={cam} className="upload-camera-chip">
                                             <span className="cam-name">{cam}</span>
                                             <span className="cam-count">{count} images</span>
+                                            <input
+                                                className="upload-coord-input"
+                                                type="number"
+                                                step="any"
+                                                placeholder="Latitude"
+                                                value={cameraCoordinates[cam]?.latitude || ''}
+                                                onChange={(e) => setCameraCoordinates((prev) => ({
+                                                    ...prev,
+                                                    [cam]: { ...(prev[cam] || { latitude: '', longitude: '' }), latitude: e.target.value },
+                                                }))}
+                                            />
+                                            <input
+                                                className="upload-coord-input"
+                                                type="number"
+                                                step="any"
+                                                placeholder="Longitude"
+                                                value={cameraCoordinates[cam]?.longitude || ''}
+                                                onChange={(e) => setCameraCoordinates((prev) => ({
+                                                    ...prev,
+                                                    [cam]: { ...(prev[cam] || { latitude: '', longitude: '' }), longitude: e.target.value },
+                                                }))}
+                                            />
                                         </div>
                                     ))}
                                 </div>
@@ -1147,7 +1234,7 @@ function BatchUpload() {
                         )}
                         <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem' }}>
                             <button className="btn btn-primary" onClick={handleUpload} disabled={uploading}>{uploading ? 'Uploading...' : `Upload & Process (${selectedFiles.length} images)`}</button>
-                            <button className="btn btn-outline" onClick={() => { setSelectedFiles([]); setCollectionName(''); }}>Clear</button>
+                            <button className="btn btn-outline" onClick={() => { setSelectedFiles([]); setCollectionName(''); setCameraCoordinates({}); }}>Clear</button>
                         </div>
                         {error && <p style={{ color: 'var(--danger)', marginTop: '0.5rem', fontSize: '0.85rem' }}>{error}</p>}
                     </div>
@@ -1863,25 +1950,104 @@ function SpeciesDetail() {
 function SpeciesImages() {
     const { speciesKey } = useParams();
     const decoded = speciesKey ? decodeURIComponent(speciesKey).replace(/-/g, ' ') : '';
+    const isQuoll = /quoll/i.test(decoded);
+    const { user } = useAuth();
     const [images, setImages] = useState<PaginatedResponse<ImageData> | null>(null);
     const [page, setPage] = useState(1);
     const [loading, setLoading] = useState(true);
     const [selected, setSelected] = useState<ImageData | null>(null);
     const [detections, setDetections] = useState<Detection[]>([]);
     const [showBoxes, setShowBoxes] = useState(true);
+    const [focusedDetId, setFocusedDetId] = useState<number | null>(null);
+
+    const [individuals, setIndividuals] = useState<IndividualData[]>([]);
+    const [indsLoading, setIndsLoading] = useState(false);
+
+    const [assignId, setAssignId] = useState('');
+    const [assignNotes, setAssignNotes] = useState('');
+    const [savingAssign, setSavingAssign] = useState(false);
+    const [assignMsg, setAssignMsg] = useState<string | null>(null);
+
+    const [compareId, setCompareId] = useState('');
+    const [compareGallery, setCompareGallery] = useState<IndividualGalleryItem[]>([]);
+    const [compareLoading, setCompareLoading] = useState(false);
+
+    const [createOpen, setCreateOpen] = useState(false);
+    const [newIndividualId, setNewIndividualId] = useState('');
+    const [newName, setNewName] = useState('');
+    const [refLeft, setRefLeft] = useState<number | null>(null);
+    const [refRight, setRefRight] = useState<number | null>(null);
+    const [createBusy, setCreateBusy] = useState(false);
+    const [createMsg, setCreateMsg] = useState<string | null>(null);
+
+    const [unassignedOnly, setUnassignedOnly] = useState(false);
+    const [selectMode, setSelectMode] = useState(false);
+    const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+    const [bulkAssignId, setBulkAssignId] = useState('');
+    const [bulkAssigning, setBulkAssigning] = useState(false);
+    const [bulkAssignMsg, setBulkAssignMsg] = useState<string | null>(null);
 
     useEffect(() => {
         if (!decoded) return;
         setLoading(true);
-        fetchImagesBySpecies(decoded, { page, per_page: 30 }).then(setImages).catch(() => {}).finally(() => setLoading(false));
-    }, [decoded, page]);
+        fetchImagesBySpecies(decoded, { page, per_page: 30, unassigned_only: unassignedOnly })
+            .then(setImages).catch(() => {}).finally(() => setLoading(false));
+    }, [decoded, page, unassignedOnly]);
+
+    const refreshSelectedDetail = useCallback(async () => {
+        if (!selected) return;
+        try {
+            const detail: any = await fetchImageDetail(selected.id);
+            setDetections(detail.detections || []);
+        } catch {
+            setDetections([]);
+        }
+    }, [selected?.id]);
 
     useEffect(() => {
         if (!selected) { setDetections([]); return; }
-        fetchImageDetail(selected.id).then((detail: any) => {
-            setDetections(detail.detections || []);
-        }).catch(() => setDetections([]));
+        refreshSelectedDetail();
     }, [selected?.id]);
+
+    useEffect(() => {
+        if (!selected) {
+            setFocusedDetId(null);
+            setAssignId('');
+            setAssignNotes('');
+            setAssignMsg(null);
+            setCompareId('');
+            setCompareGallery([]);
+            setCreateOpen(false);
+            setCreateMsg(null);
+            setNewIndividualId('');
+            setNewName('');
+            setRefLeft(null);
+            setRefRight(null);
+            return;
+        }
+        // When an image opens, default focus to first detection if any.
+        if (detections.length === 1) setFocusedDetId(detections[0].id);
+        if (focusedDetId == null && detections.length > 0) setFocusedDetId(detections[0].id);
+    }, [selected?.id, detections.length]);
+
+    useEffect(() => {
+        if (!isQuoll) return;
+        if (!selected && !selectMode) return;
+        setIndsLoading(true);
+        fetchIndividuals()
+            .then((list) => setIndividuals(list.filter((i) => individualMatchesSpeciesPage(i, decoded))))
+            .catch(() => setIndividuals([]))
+            .finally(() => setIndsLoading(false));
+    }, [selected?.id, isQuoll, decoded, selectMode]);
+
+    useEffect(() => {
+        if (!compareId) { setCompareGallery([]); return; }
+        setCompareLoading(true);
+        fetchIndividualGallery(compareId)
+            .then((g) => setCompareGallery(g.items || []))
+            .catch(() => setCompareGallery([]))
+            .finally(() => setCompareLoading(false));
+    }, [compareId]);
 
     const sortedItems = images ? [...images.items].sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true, sensitivity: 'base' })) : [];
     const selectedIdx = selected ? sortedItems.findIndex((i) => i.id === selected.id) : -1;
@@ -1896,15 +2062,99 @@ function SpeciesImages() {
     });
 
     if (loading) return <LoadingState />;
+    const focused = focusedDetId != null ? detections.find((d) => d.id === focusedDetId) : null;
+    const currentAssigned = (() => {
+        if (!focused?.annotations || focused.annotations.length === 0) return null;
+        const withId = focused.annotations.filter((a) => a && a.individual_id);
+        if (withId.length === 0) return null;
+        withId.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+        return withId[withId.length - 1].individual_id || null;
+    })();
+
     return (
         <div>
             <nav className="breadcrumb"><Link to="/">Home</Link><span className="sep">›</span><Link to="/individuals">Profiles</Link><span className="sep">›</span><Link to={`/individuals/species/${speciesKey}`}>{decoded}</Link><span className="sep">›</span><span>Images</span></nav>
             <div className="page-header"><h2>All images — {decoded}</h2><span className="tag tag-muted" style={{ marginLeft: '0.5rem' }}>{images?.total ?? 0} images</span></div>
-            {!images || images.items.length === 0 ? <div className="empty-state">No images for this species.</div> : (
+
+            {/* Filter & selection toolbar */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', marginBottom: '1rem', padding: '0.6rem 0.9rem', background: 'var(--card-bg)', borderRadius: 8, border: '1px solid var(--border)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.875rem', fontWeight: 500 }}>
+                    <input
+                        type="checkbox"
+                        checked={unassignedOnly}
+                        onChange={(e) => {
+                            setUnassignedOnly(e.target.checked);
+                            setPage(1);
+                            setSelectedIds(new Set());
+                            setSelectMode(false);
+                            setBulkAssignMsg(null);
+                        }}
+                    />
+                    Unassigned only
+                </label>
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    {selectMode && selectedIds.size > 0 && (
+                        <button className="btn btn-outline" style={{ fontSize: '0.8rem' }}
+                            onClick={() => setSelectedIds(new Set(sortedItems.map((i) => i.id)))}>
+                            Select all on page
+                        </button>
+                    )}
+                    {selectMode && selectedIds.size > 0 && (
+                        <button className="btn btn-outline" style={{ fontSize: '0.8rem' }}
+                            onClick={() => setSelectedIds(new Set())}>
+                            Clear
+                        </button>
+                    )}
+                    <button
+                        className={selectMode ? 'btn btn-primary' : 'btn btn-outline'}
+                        style={{ fontSize: '0.85rem' }}
+                        onClick={() => {
+                            setSelectMode((m) => !m);
+                            setSelectedIds(new Set());
+                            setBulkAssignMsg(null);
+                        }}
+                    >
+                        {selectMode ? `Selection mode (${selectedIds.size} selected)` : 'Select images'}
+                    </button>
+                </div>
+            </div>
+
+            {!images || images.items.length === 0 ? <div className="empty-state">{unassignedOnly ? 'No unassigned images for this species.' : 'No images for this species.'}</div> : (
                 <>
                     <div className="image-grid">
                         {sortedItems.map((img) => (
-                            <div key={img.id} className="image-card" onClick={() => setSelected(img)} style={{ cursor: 'pointer' }}>
+                            <div
+                                key={img.id}
+                                className="image-card"
+                                onClick={() => {
+                                    if (selectMode) {
+                                        setSelectedIds((prev) => {
+                                            const next = new Set(prev);
+                                            if (next.has(img.id)) next.delete(img.id);
+                                            else next.add(img.id);
+                                            return next;
+                                        });
+                                    } else {
+                                        setSelected(img);
+                                    }
+                                }}
+                                style={{
+                                    cursor: 'pointer',
+                                    position: 'relative',
+                                    outline: selectedIds.has(img.id) ? '3px solid #3b82f6' : undefined,
+                                    outlineOffset: '-2px',
+                                }}
+                            >
+                                {selectMode && (
+                                    <div style={{ position: 'absolute', top: 6, left: 6, zIndex: 2, pointerEvents: 'none' }}>
+                                        <input
+                                            type="checkbox"
+                                            readOnly
+                                            checked={selectedIds.has(img.id)}
+                                            style={{ width: 17, height: 17, accentColor: '#3b82f6' }}
+                                        />
+                                    </div>
+                                )}
                                 <div className="image-thumb">
                                     {(img.thumbnail_path || img.file_path) ? <img src={storageUrl(img.thumbnail_path || img.file_path)} alt={img.filename} /> : '📷'}
                                     {img.has_animal && <div className="image-animal-badge">ANIMAL</div>}
@@ -1918,6 +2168,75 @@ function SpeciesImages() {
                             </div>
                         ))}
                     </div>
+
+                    {/* Bulk-assign bar */}
+                    {selectMode && selectedIds.size > 0 && (
+                        <div style={{ position: 'sticky', bottom: 0, zIndex: 100, background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.75rem 1rem', display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', boxShadow: '0 -4px 16px rgba(0,0,0,0.18)', marginTop: '1rem' }}>
+                            <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
+                                {selectedIds.size} image{selectedIds.size !== 1 ? 's' : ''} selected
+                            </span>
+                            <input
+                                className="filter-select"
+                                style={{ flex: '1 1 160px', minWidth: 120 }}
+                                value={bulkAssignId}
+                                onChange={(e) => setBulkAssignId(e.target.value)}
+                                placeholder="Profile ID (e.g. 02Q2)"
+                                disabled={bulkAssigning}
+                            />
+                            {individuals.length > 0 && (
+                                <select
+                                    className="filter-select"
+                                    value={bulkAssignId}
+                                    onChange={(e) => setBulkAssignId(e.target.value)}
+                                    disabled={bulkAssigning || indsLoading}
+                                    style={{ flex: '1 1 200px', minWidth: 140 }}
+                                >
+                                    <option value="">Pick profile…</option>
+                                    {individuals.map((ind) => (
+                                        <option key={ind.individual_id} value={ind.individual_id}>
+                                            {ind.individual_id}{(ind as any).name ? ` — ${(ind as any).name}` : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                            )}
+                            <button
+                                className="btn btn-primary"
+                                disabled={bulkAssigning || !bulkAssignId.trim() || !user}
+                                onClick={async () => {
+                                    if (!bulkAssignId.trim()) return;
+                                    setBulkAssigning(true);
+                                    setBulkAssignMsg(null);
+                                    let assigned = 0;
+                                    let failed = 0;
+                                    for (const imgId of Array.from(selectedIds)) {
+                                        try {
+                                            const detail: any = await fetchImageDetail(imgId);
+                                            const dets: Detection[] = detail.detections || [];
+                                            for (const det of dets) {
+                                                await createAnnotation({ detection_id: det.id, is_correct: true, individual_id: bulkAssignId.trim() });
+                                                assigned++;
+                                            }
+                                        } catch {
+                                            failed++;
+                                        }
+                                    }
+                                    setBulkAssignMsg(`Done: ${assigned} detection${assigned !== 1 ? 's' : ''} assigned to ${bulkAssignId.trim()}${failed ? ` (${failed} image error${failed !== 1 ? 's' : ''})` : ''}.`);
+                                    setBulkAssigning(false);
+                                    setSelectedIds(new Set());
+                                    if (unassignedOnly) {
+                                        setLoading(true);
+                                        fetchImagesBySpecies(decoded, { page, per_page: 30, unassigned_only: true })
+                                            .then(setImages).catch(() => {}).finally(() => setLoading(false));
+                                    }
+                                }}
+                            >
+                                {bulkAssigning ? 'Assigning…' : `Assign to ${bulkAssignId || '…'}`}
+                            </button>
+                            {!user && <span className="tag tag-muted">Login required</span>}
+                            {bulkAssignMsg && <span className="tag tag-info" style={{ fontSize: '0.8rem' }}>{bulkAssignMsg}</span>}
+                        </div>
+                    )}
+
                     {images.pages > 1 && <div className="pagination"><button className="page-btn" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>Prev</button><span className="page-info">Page {page} of {images.pages}</span><button className="page-btn" onClick={() => setPage((p) => Math.min(images.pages, p + 1))} disabled={page === images.pages}>Next</button></div>}
                 </>
             )}
@@ -1948,15 +2267,20 @@ function SpeciesImages() {
                                     }}
                                 />
                                 {showBoxes && detections.map((det) => (
-                                    <div key={det.id} className="detection-bbox-overlay" style={{
+                                    <div
+                                        key={det.id}
+                                        className="detection-bbox-overlay"
+                                        onClick={() => setFocusedDetId(det.id)}
+                                        title="Click to focus this detection"
+                                        style={{
                                         position: 'absolute',
                                         left: `${det.bbox_x * 100}%`,
                                         top: `${det.bbox_y * 100}%`,
                                         width: `${det.bbox_w * 100}%`,
                                         height: `${det.bbox_h * 100}%`,
-                                        border: '2px solid #00ff88',
+                                        border: det.id === focusedDetId ? '3px solid #3b82f6' : '2px solid #00ff88',
                                         borderRadius: 3,
-                                        pointerEvents: 'none',
+                                        cursor: 'pointer',
                                     }}>
                                         <span className="detection-bbox-label" style={{
                                             position: 'absolute',
@@ -1970,6 +2294,7 @@ function SpeciesImages() {
                                             borderRadius: '3px 3px 0 0',
                                             whiteSpace: 'nowrap',
                                             lineHeight: '18px',
+                                            backgroundColor: det.id === focusedDetId ? 'rgba(59,130,246,0.9)' : 'rgba(0,255,136,0.85)',
                                         }}>
                                             {det.species || det.category || 'animal'} — AWC135: {det.classification_confidence != null ? (det.classification_confidence * 100).toFixed(1) + '%' : 'N/A'}
                                         </span>
@@ -1988,10 +2313,211 @@ function SpeciesImages() {
                                     <div style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.4rem' }}>Detections ({detections.length})</div>
                                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
                                         {detections.map((det) => (
-                                            <span key={det.id} className="tag tag-primary" style={{ fontSize: '0.7rem' }}>
-                                                {det.species || 'unknown'} — {det.classification_confidence != null ? (det.classification_confidence * 100).toFixed(1) + '%' : 'N/A'} conf
-                                            </span>
+                                            <button
+                                                key={det.id}
+                                                className={det.id === focusedDetId ? 'tag tag-info' : 'tag tag-primary'}
+                                                style={{ fontSize: '0.7rem', border: 0, cursor: 'pointer' }}
+                                                onClick={() => setFocusedDetId(det.id)}
+                                            >
+                                                #{det.id} {det.species || 'unknown'} — {det.classification_confidence != null ? (det.classification_confidence * 100).toFixed(1) + '%' : 'N/A'}
+                                            </button>
                                         ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {isQuoll && (
+                                <div className="card" style={{ marginBottom: '1rem' }}>
+                                    <div className="card-header" style={{ justifyContent: 'space-between' }}>
+                                        <h3 style={{ margin: 0 }}>Manual re-ID</h3>
+                                        {focused ? <span className="tag tag-muted">Focused detection #{focused.id}</span> : <span className="tag tag-muted">Select a detection</span>}
+                                    </div>
+                                    <div className="card-body">
+                                        {!user && (
+                                            <div className="tag tag-muted" style={{ marginBottom: '0.75rem' }}>
+                                                Login required to save assignments / create profiles.
+                                            </div>
+                                        )}
+                                        {focused && (
+                                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center', marginBottom: '0.75rem' }}>
+                                                <span className="tag tag-primary">{focused.species || 'unknown'}</span>
+                                                {currentAssigned ? <span className="tag tag-info">Assigned: {currentAssigned}</span> : <span className="tag tag-muted">Unassigned</span>}
+                                            </div>
+                                        )}
+
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0.75rem', minWidth: 0 }}>
+                                            {/* Assign row */}
+                                            <div>
+                                                <div style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6 }}>Assign to existing ID</div>
+                                                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                                                    <input
+                                                        className="filter-select"
+                                                        style={{ flex: '1 1 160px', minWidth: 100 }}
+                                                        value={assignId}
+                                                        onChange={(e) => setAssignId(e.target.value)}
+                                                        placeholder="e.g. 02Q2"
+                                                        disabled={!focused || savingAssign}
+                                                    />
+                                                    <button
+                                                        className="btn btn-primary"
+                                                        disabled={!focused || !assignId.trim() || savingAssign}
+                                                        onClick={async () => {
+                                                            if (!focused) return;
+                                                            setSavingAssign(true);
+                                                            setAssignMsg(null);
+                                                            try {
+                                                                await createAnnotation({
+                                                                    detection_id: focused.id,
+                                                                    is_correct: true,
+                                                                    individual_id: assignId.trim(),
+                                                                    notes: assignNotes.trim() || undefined,
+                                                                });
+                                                                setAssignMsg(`Assigned detection #${focused.id} → ${assignId.trim()}`);
+                                                                setCompareId(assignId.trim());
+                                                                await refreshSelectedDetail();
+                                                            } catch (e: any) {
+                                                                setAssignMsg(e?.message || 'Failed to assign');
+                                                            }
+                                                            setSavingAssign(false);
+                                                        }}
+                                                    >
+                                                        {savingAssign ? 'Saving…' : 'Assign'}
+                                                    </button>
+                                                    <button className="btn btn-outline" onClick={() => { setCreateOpen(true); setCreateMsg(null); }} disabled={!focused}>
+                                                        Create new profile…
+                                                    </button>
+                                                </div>
+                                                <div style={{ marginTop: 8 }}>
+                                                    <textarea
+                                                        className="filter-select"
+                                                        style={{ width: '100%', minHeight: 44, boxSizing: 'border-box' }}
+                                                        value={assignNotes}
+                                                        onChange={(e) => setAssignNotes(e.target.value)}
+                                                        placeholder="Notes (optional)"
+                                                        disabled={savingAssign}
+                                                    />
+                                                </div>
+                                                {assignMsg && <div className="tag tag-muted" style={{ marginTop: 8 }}>{assignMsg}</div>}
+                                            </div>
+
+                                            {/* Reference comparison — constrained so gallery scrolls inside, never stretches the card */}
+                                            <div style={{ minWidth: 0, overflow: 'hidden' }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: 6, flexWrap: 'wrap' }}>
+                                                    <span style={{ fontSize: '0.8rem', fontWeight: 700, whiteSpace: 'nowrap' }}>Reference comparison</span>
+                                                    <select
+                                                        className="filter-select"
+                                                        value={compareId}
+                                                        onChange={(e) => setCompareId(e.target.value)}
+                                                        disabled={indsLoading}
+                                                        style={{ flex: '1 1 180px', minWidth: 120, fontSize: '0.8rem' }}
+                                                    >
+                                                        <option value="">Pick an individual…</option>
+                                                        {individuals.map((i) => (
+                                                            <option key={i.individual_id} value={i.individual_id}>
+                                                                {i.individual_id}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+                                                {!compareId ? (
+                                                    <div className="empty-state" style={{ padding: '0.5rem 0.75rem' }}>Pick an individual above to compare.</div>
+                                                ) : compareLoading ? (
+                                                    <div className="empty-state" style={{ padding: '0.5rem 0.75rem' }}>Loading gallery…</div>
+                                                ) : compareGallery.length === 0 ? (
+                                                    <div className="empty-state" style={{ padding: '0.5rem 0.75rem' }}>No gallery items for {compareId}.</div>
+                                                ) : (
+                                                    <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 8, width: '100%', boxSizing: 'border-box' }}>
+                                                        {compareGallery.slice(0, 40).map((it) => (
+                                                            <div key={`${it.image_id}-${it.detection_id ?? 'img'}`} style={{ flex: '0 0 110px' }}>
+                                                                <img
+                                                                    src={it.display_url || it.thumb_url || ''}
+                                                                    alt=""
+                                                                    style={{ width: 110, height: 80, objectFit: 'cover', borderRadius: 6, border: '1px solid rgba(0,0,0,0.15)', display: 'block' }}
+                                                                />
+                                                                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, whiteSpace: 'nowrap' }}>
+                                                                    {it.captured_at ? String(it.captured_at).slice(0, 10) : '—'}
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {createOpen && (
+                                <div className="lightbox-overlay" onClick={() => setCreateOpen(false)} style={{ background: 'rgba(0,0,0,0.35)' }}>
+                                    <div className="lightbox-content card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 720 }}>
+                                        <div className="card-header" style={{ justifyContent: 'space-between' }}>
+                                            <h3 style={{ margin: 0 }}>Create new individual profile</h3>
+                                            <button className="btn btn-outline" onClick={() => setCreateOpen(false)}>Close</button>
+                                        </div>
+                                        <div className="card-body">
+                                            {!focused ? (
+                                                <div className="empty-state">Select a detection first.</div>
+                                            ) : (
+                                                <>
+                                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                                                        <div>
+                                                            <div style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6 }}>New ID</div>
+                                                            <input className="filter-select" value={newIndividualId} onChange={(e) => setNewIndividualId(e.target.value)} placeholder="e.g. 09Q3" />
+                                                        </div>
+                                                        <div>
+                                                            <div style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6 }}>Name (optional)</div>
+                                                            <input className="filter-select" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="nickname" />
+                                                        </div>
+                                                    </div>
+                                                    <div className="tag tag-muted" style={{ marginBottom: 10 }}>
+                                                        Choose reference detections. You can navigate images (Prev/Next) while this dialog is open, then click a box to focus it and set it as Left/Right reference.
+                                                    </div>
+                                                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+                                                        <button className="btn btn-outline" onClick={() => setRefLeft(focused.id)} disabled={createBusy}>Use focused as LEFT ref</button>
+                                                        <button className="btn btn-outline" onClick={() => setRefRight(focused.id)} disabled={createBusy}>Use focused as RIGHT ref</button>
+                                                        {refLeft != null ? <span className="tag tag-info">Left: #{refLeft}</span> : <span className="tag tag-muted">Left: not set</span>}
+                                                        {refRight != null ? <span className="tag tag-info">Right: #{refRight}</span> : <span className="tag tag-muted">Right: not set</span>}
+                                                    </div>
+                                                    {createMsg && <div className="tag tag-muted" style={{ marginBottom: 10 }}>{createMsg}</div>}
+                                                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                                        <button
+                                                            className="btn btn-primary"
+                                                            disabled={createBusy || !newIndividualId.trim() || refLeft == null || refRight == null}
+                                                            onClick={async () => {
+                                                                if (!focused) return;
+                                                                setCreateBusy(true);
+                                                                setCreateMsg(null);
+                                                                try {
+                                                                    await createIndividual({
+                                                                        individual_id: newIndividualId.trim(),
+                                                                        species: decoded || 'Spotted-tailed Quoll',
+                                                                        name: newName.trim() || undefined,
+                                                                        ref_left_detection_id: refLeft!,
+                                                                        ref_right_detection_id: refRight!,
+                                                                    });
+                                                                    await createAnnotation({
+                                                                        detection_id: focused.id,
+                                                                        is_correct: true,
+                                                                        individual_id: newIndividualId.trim(),
+                                                                        notes: `Created profile (left=${refLeft}, right=${refRight})`,
+                                                                    });
+                                                                    setCreateMsg(`Created ${newIndividualId.trim()} and assigned current detection.`);
+                                                                    setCompareId(newIndividualId.trim());
+                                                                    await refreshSelectedDetail();
+                                                                    setCreateOpen(false);
+                                                                } catch (e: any) {
+                                                                    setCreateMsg(e?.message || 'Failed to create profile');
+                                                                }
+                                                                setCreateBusy(false);
+                                                            }}
+                                                        >
+                                                            {createBusy ? 'Creating…' : 'Create profile + assign'}
+                                                        </button>
+                                                        <button className="btn btn-outline" onClick={() => { setRefLeft(null); setRefRight(null); }} disabled={createBusy}>Clear refs</button>
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
                             )}
@@ -2007,45 +2533,143 @@ function SpeciesImages() {
     );
 }
 
+function QuollIndividualCardLink({ speciesKey, ind }: { speciesKey: string; ind: IndividualData }) {
+    const [preview, setPreview] = useState<string | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        fetchIndividualGallery(ind.individual_id)
+            .then((g) => {
+                if (!cancelled) setPreview(g.items[0]?.display_url ?? null);
+            })
+            .catch(() => {
+                if (!cancelled) setPreview(null);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [ind.individual_id]);
+
+    return (
+        <Link
+            to={`/individuals/species/${speciesKey}/individuals/${encodeURIComponent(ind.individual_id)}`}
+            className="wt-quoll-card"
+        >
+            <div className="wt-quoll-card-image">
+                {preview ? (
+                    <img src={preview} alt="" loading="lazy" />
+                ) : (
+                    <div className="wt-quoll-card-placeholder">🐾</div>
+                )}
+            </div>
+            <div className="wt-quoll-card-body">
+                <div className="wt-quoll-card-id">{ind.individual_id}</div>
+                <div className="wt-quoll-card-meta">{ind.species}</div>
+                <div className="wt-quoll-card-stats">
+                    <span>{ind.total_sightings} sightings</span>
+                </div>
+            </div>
+        </Link>
+    );
+}
+
 function SpeciesByIndividual() {
     const { speciesKey } = useParams();
     const decoded = speciesKey ? decodeURIComponent(speciesKey).replace(/-/g, ' ') : '';
     const [individuals, setIndividuals] = useState<IndividualData[]>([]);
     const [loading, setLoading] = useState(true);
+    const [reidRuntime, setReidRuntime] = useState<Record<string, unknown> | null>(null);
 
-    useEffect(() => { fetchIndividuals().then((list) => setIndividuals(list.filter((i) => i.species.toLowerCase().includes(decoded.toLowerCase())))).finally(() => setLoading(false)); }, [decoded]);
+    useEffect(() => {
+        fetchIndividuals()
+            .then((list) => setIndividuals(list.filter((i) => individualMatchesSpeciesPage(i, decoded))))
+            .finally(() => setLoading(false));
+    }, [decoded]);
+
+    useEffect(() => {
+        fetchReidInfo()
+            .then((info) => {
+                const r = info.runtime;
+                setReidRuntime(r !== null && typeof r === 'object' ? (r as Record<string, unknown>) : null);
+            })
+            .catch(() => setReidRuntime(null));
+    }, []);
 
     if (loading) return <LoadingState />;
     return (
-        <div>
-            <nav className="breadcrumb"><Link to="/">Home</Link><span className="sep">›</span><Link to="/individuals">Profiles</Link><span className="sep">›</span><Link to={`/individuals/species/${speciesKey}`}>{decoded}</Link><span className="sep">›</span><span>By individual</span></nav>
-            <div className="page-header"><h2>Individuals — {decoded}</h2></div>
-            <div className="quoll-grid">
-                {individuals.map((ind) => (
-                    <Link key={ind.individual_id} to={`/individuals/species/${speciesKey}/individuals/${encodeURIComponent(ind.individual_id)}`} className="quoll-card">
-                        <div className="quoll-id">🐾 {ind.individual_id}</div>
-                        <div className="quoll-species">{ind.species}</div>
-                        <div className="quoll-stats"><div className="quoll-stat"><div className="label">Sightings</div><div className="value">{ind.total_sightings}</div></div></div>
-                    </Link>
-                ))}
+        <div className="wt-individuals-list-page">
+            <nav className="breadcrumb">
+                <Link to="/">Home</Link>
+                <span className="sep">›</span>
+                <Link to="/individuals">Profiles</Link>
+                <span className="sep">›</span>
+                <Link to={`/individuals/species/${speciesKey}`}>{decoded}</Link>
+                <span className="sep">›</span>
+                <span>Individuals</span>
+            </nav>
+            <div className="page-header">
+                <h2 style={{ color: WT_GREEN }}>Individuals — {decoded}</h2>
+                <p className="text-muted">Select a quoll to open its profile (WildlifeTracker-style).</p>
             </div>
+            {individuals.length === 0 ? (
+                <div className="card" style={{ padding: '1.5rem', maxWidth: 720 }}>
+                    <h3 style={{ marginTop: 0 }}>No individuals listed yet</h3>
+                    {Boolean(reidRuntime?.auto_assign_enabled) ? (
+                        <p style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                            The worker is configured to <strong>auto-assign</strong> quoll IDs from your MegaDescriptor gallery
+                            when images are processed (MD → AWC quoll → crop → re-ID). If you uploaded before the gallery
+                            existed, re-run processing for those images or upload again. IDs must pass the similarity / gap
+                            gate (see <Link to="/individuals">Profiles</Link> Notes tab or <code>GET /api/reid/info</code>).
+                        </p>
+                    ) : (
+                        <>
+                            <p style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                <strong>Automatic pipeline:</strong> train a prototype gallery with{' '}
+                                <code>scripts/reid_megadescriptor_hf_mvp.py</code> and save it to{' '}
+                                <code>{String(reidRuntime?.gallery_path ?? 'storage/models/megadescriptor_l384_gallery.pt')}</code>
+                                {reidRuntime?.gallery_exists === false ? (
+                                    <> (file not found yet — cards appear after the gallery exists and new quoll images are processed).</>
+                                ) : (
+                                    <>; then process images so quoll crops get annotations automatically.</>
+                                )}
+                            </p>
+                            <p style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                You can still assign a quoll individual ID manually in{' '}
+                                <Link to="/pending-review">Review</Link> (e.g. <code>02Q2</code>); those merge into this list.
+                            </p>
+                        </>
+                    )}
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                        CSV import of individuals/sightings is supported separately if you use that workflow.
+                    </p>
+                </div>
+            ) : (
+                <div className="wt-quoll-card-grid">
+                    {individuals.map((ind) => (
+                        <QuollIndividualCardLink key={ind.individual_id} speciesKey={speciesKey!} ind={ind} />
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
 
 /* ============================================================
-   INDIVIDUAL PROFILE PAGE
+   INDIVIDUAL PROFILE PAGE (WildlifeTracker-style)
    ============================================================ */
 function IndividualImages() {
     const { speciesKey, individualId } = useParams();
     const decodedId = individualId ? decodeURIComponent(individualId) : '';
     const decodedSpecies = speciesKey ? decodeURIComponent(speciesKey).replace(/-/g, ' ') : '';
-    
+
     const [individual, setIndividual] = useState<IndividualData | null>(null);
     const [loading, setLoading] = useState(true);
+    const [tab, setTab] = useState<'overview' | 'images' | 'movement' | 'notes'>('images');
+    const [gallery, setGallery] = useState<IndividualGalleryItem[]>([]);
+    const [galLoading, setGalLoading] = useState(true);
+    const [galSource, setGalSource] = useState<string>('');
+    const [reidInfo, setReidInfo] = useState<Record<string, unknown> | null>(null);
 
     useEffect(() => {
-        // Fetch the list of individuals and find the specific one matching our ID
         fetchIndividuals()
             .then((list) => {
                 const found = list.find((i) => i.individual_id === decodedId);
@@ -2055,9 +2679,27 @@ function IndividualImages() {
             .finally(() => setLoading(false));
     }, [decodedId]);
 
+    useEffect(() => {
+        if (!decodedId) return;
+        setGalLoading(true);
+        fetchIndividualGallery(decodedId)
+            .then((g) => {
+                setGallery(g.items);
+                setGalSource(g.source);
+            })
+            .catch(() => {
+                setGallery([]);
+                setGalSource('');
+            })
+            .finally(() => setGalLoading(false));
+    }, [decodedId]);
+
+    useEffect(() => {
+        fetchReidInfo().then(setReidInfo).catch(() => setReidInfo(null));
+    }, []);
+
     if (loading) return <LoadingState />;
 
-    // Calculate "Days Active" if we have both first and last seen dates
     let daysActive = '—';
     if (individual?.first_seen && individual?.last_seen) {
         const first = new Date(individual.first_seen).getTime();
@@ -2066,130 +2708,231 @@ function IndividualImages() {
         daysActive = diffDays === 0 ? '1 Day' : `${diffDays} Days`;
     }
 
-    // Dummy map center (Can be updated later to average sightings coords)
     const mapCenter: [number, number] = [-34.4, 150.3];
+    const heroSrc = gallery[0]?.display_url ?? null;
+    const gridSlots: (IndividualGalleryItem | null)[] = [...gallery.slice(0, 12)];
+    while (gridSlots.length < 12) gridSlots.push(null);
+
+    const commonName = 'Spotted-tailed Quoll';
 
     return (
-        <div className="profile-page-wrapper">
-            <div className="profile-container">
-                
-                {/* Breadcrumb Navigation */}
-                <nav className="breadcrumb" style={{ marginBottom: '2rem' }}>
-                    <Link to="/">Home</Link><span className="sep">›</span>
-                    <Link to="/individuals">Profiles</Link><span className="sep">›</span>
-                    <Link to={`/individuals/species/${speciesKey}`}>{decodedSpecies}</Link><span className="sep">›</span>
-                    <Link to={`/individuals/species/${speciesKey}/individuals`}>Individuals</Link><span className="sep">›</span>
-                    <span style={{ fontWeight: 'bold', color: '#16a34a' }}>{decodedId}</span>
-                </nav>
+        <div className="wt-individual-page">
+            <nav className="breadcrumb wt-breadcrumb">
+                <Link to="/">Home</Link>
+                <span className="sep">›</span>
+                <Link to="/individuals">Profiles</Link>
+                <span className="sep">›</span>
+                <Link to={`/individuals/species/${speciesKey}`}>{decodedSpecies}</Link>
+                <span className="sep">›</span>
+                <Link to={`/individuals/species/${speciesKey}/individuals`}>Individuals</Link>
+                <span className="sep">›</span>
+                <span className="wt-breadcrumb-current">{decodedId}</span>
+            </nav>
 
-                {/* Main Identity Header */}
-                <div className="profile-header-card">
-                    <div className="profile-identity">
-                        <h1>🐾 {decodedId}</h1>
-                        <p>{decodedSpecies}</p>
+            {!individual && (
+                <div className="wt-banner-warn">
+                    This individual ID is not in the database list yet; sightings gallery may be empty until data is
+                    linked.
+                </div>
+            )}
+
+            <section className="wt-profile-hero">
+                <div className="wt-profile-hero-text">
+                    <h1 className="wt-profile-title">
+                        {commonName} — <strong>{decodedId}</strong>
+                    </h1>
+                    <p className="wt-profile-lead">{SPOTTED_QUOLL_OVERVIEW}</p>
+                </div>
+                <div className="wt-profile-hero-photo">
+                    {heroSrc ? (
+                        <img src={heroSrc} alt={`${decodedId}`} className="wt-hero-main-img" />
+                    ) : (
+                        <div className="wt-hero-main-placeholder">📷 No image yet</div>
+                    )}
+                </div>
+                <aside className="wt-profile-sidebar">
+                    <div className="wt-sidebar-thumb">
+                        {heroSrc ? <img src={heroSrc} alt="" /> : <span>🐾</span>}
                     </div>
-                    <div>
-                        {/* Assuming active if seen within the last 30 days, otherwise 'Historical' */}
-                        <span className="status-badge">🟢 Active Track</span>
+                    <h3 className="wt-sidebar-heading">Taxonomy</h3>
+                    <ul className="wt-taxonomy-list">
+                        <li>
+                            <span className="k">Genus</span> <em>Dasyurus</em>
+                        </li>
+                        <li>
+                            <span className="k">Species</span> <em>maculatus</em>
+                        </li>
+                        <li>
+                            <span className="k">Family</span> Dasyuridae
+                        </li>
+                        <li>
+                            <span className="k">Order</span> Dasyuromorphia
+                        </li>
+                    </ul>
+                    <p className="wt-size-line">
+                        <span className="wt-paw">🐾</span> Size range (typical): 35 cm – 75 cm
+                    </p>
+                    <div className="wt-sidebar-actions">
+                        <Link to="/images" className="wt-btn wt-btn-primary">
+                            ↑ Upload Pic
+                        </Link>
+                        <button type="button" className="wt-btn wt-btn-outline" disabled title="Demo placeholder">
+                            ♥ Like
+                        </button>
+                    </div>
+                </aside>
+            </section>
+
+            <div className="wt-tab-shell">
+                <div className="wt-tab-header">
+                    <div className="wt-tab-id">
+                        <span className="wt-tab-icon">🦊</span>
+                        <span>
+                            <strong>{decodedId}</strong>
+                            <span className="wt-tab-species">{commonName}</span>
+                        </span>
+                    </div>
+                    <div className="wt-tabs">
+                        {(['overview', 'images', 'movement', 'notes'] as const).map((t) => (
+                            <button
+                                key={t}
+                                type="button"
+                                className={`wt-tab ${tab === t ? 'active' : ''}`}
+                                onClick={() => setTab(t)}
+                            >
+                                {t === 'overview' && 'Overview'}
+                                {t === 'images' && 'Images'}
+                                {t === 'movement' && 'Movement Tracking'}
+                                {t === 'notes' && 'Notes'}
+                            </button>
+                        ))}
                     </div>
                 </div>
-
-                {/* Quick Stats Row */}
-                <div className="profile-stats-row">
-                    <div className="profile-stat-box">
-                        <div className="stat-icon-large">👁️</div>
-                        <div className="stat-details">
-                            <div className="label">Total Sightings</div>
-                            <div className="value">{individual?.total_sightings || 0}</div>
-                        </div>
-                    </div>
-                    <div className="profile-stat-box">
-                        <div className="stat-icon-large">📅</div>
-                        <div className="stat-details">
-                            <div className="label">First Seen</div>
-                            <div className="value">
-                                {individual?.first_seen ? new Date(individual.first_seen).toLocaleDateString() : 'Unknown'}
+                <div className="wt-tab-body">
+                    {tab === 'overview' && (
+                        <div className="wt-overview">
+                            <p>{SPOTTED_QUOLL_OVERVIEW}</p>
+                            <div className="wt-mini-stats">
+                                <div>
+                                    <div className="lbl">Sightings</div>
+                                    <div className="val">{individual?.total_sightings ?? gallery.length}</div>
+                                </div>
+                                <div>
+                                    <div className="lbl">First seen</div>
+                                    <div className="val">
+                                        {individual?.first_seen
+                                            ? new Date(individual.first_seen).toLocaleDateString()
+                                            : '—'}
+                                    </div>
+                                </div>
+                                <div>
+                                    <div className="lbl">Last seen</div>
+                                    <div className="val">
+                                        {individual?.last_seen
+                                            ? new Date(individual.last_seen).toLocaleDateString()
+                                            : '—'}
+                                    </div>
+                                </div>
+                                <div>
+                                    <div className="lbl">Days tracked</div>
+                                    <div className="val">{daysActive}</div>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                    <div className="profile-stat-box">
-                        <div className="stat-icon-large">📍</div>
-                        <div className="stat-details">
-                            <div className="label">Last Seen</div>
-                            <div className="value">
-                                {individual?.last_seen ? new Date(individual.last_seen).toLocaleDateString() : 'Unknown'}
-                            </div>
+                    )}
+                    {tab === 'images' && (
+                        <div>
+                            {galLoading ? (
+                                <LoadingState />
+                            ) : gallery.length === 0 ? (
+                                <EmptyMsg text="No linked images yet. Assign this individual to detections in Review, or import sightings." />
+                            ) : (
+                                <>
+                                    <p className="wt-gallery-hint">
+                                        Source: <code>{galSource || '—'}</code> · {gallery.length} image(s)
+                                    </p>
+                                    <div className="wt-image-grid-12">
+                                        {gridSlots.map((item, idx) => (
+                                            <div key={item ? `${item.image_id}-${item.detection_id}` : `ph-${idx}`} className="wt-grid-cell">
+                                                {item?.display_url ? (
+                                                    <Link to={`/review-image/${item.image_id}`} className="wt-grid-link">
+                                                        <img src={item.display_url} alt="" loading="lazy" />
+                                                        {item.captured_at && (
+                                                            <span className="wt-grid-cap">
+                                                                {new Date(item.captured_at).toLocaleDateString()}
+                                                            </span>
+                                                        )}
+                                                    </Link>
+                                                ) : (
+                                                    <div className="wt-grid-placeholder">📷</div>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>
+                            )}
                         </div>
-                    </div>
-                    <div className="profile-stat-box">
-                        <div className="stat-icon-large">⏱️</div>
-                        <div className="stat-details">
-                            <div className="label">Duration Tracked</div>
-                            <div className="value">{daysActive}</div>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Two Column Layout: Map & Gallery */}
-                <div className="profile-content-grid">
-                    
-                    {/* Left Panel: Sightings Map */}
-                    <div className="content-panel">
-                        <div className="panel-header">Territory & Sightings Map</div>
-                        <div className="panel-body">
-                            <p style={{ color: '#6b7280', fontSize: '0.875rem', marginTop: 0, marginBottom: '1.5rem' }}>
-                                Estimated territory based on camera trap coordinates.
-                            </p>
-                            <div className="profile-map-container">
-                                <MapContainer center={mapCenter} zoom={11} style={{ height: '100%', width: '100%', zIndex: 1 }}>
+                    )}
+                    {tab === 'movement' && (
+                        <div>
+                            <p className="wt-map-caption">Placeholder territory map (camera coordinates can be wired later).</p>
+                            <div className="wt-map-wrap">
+                                <MapContainer center={mapCenter} zoom={11} style={{ height: '320px', width: '100%', zIndex: 1 }}>
                                     <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="OSM" />
-                                    {/* Mock Marker representing a sighting */}
                                     <Marker position={mapCenter}>
                                         <Popup>
-                                            <strong>{decodedId} Sighting</strong><br />
-                                            {individual?.last_seen ? new Date(individual.last_seen).toLocaleDateString() : 'Recent'}
+                                            <strong>{decodedId}</strong>
+                                            <br />
+                                            {individual?.last_seen
+                                                ? new Date(individual.last_seen).toLocaleDateString()
+                                                : 'Sighting'}
                                         </Popup>
                                     </Marker>
                                 </MapContainer>
                             </div>
                         </div>
-                    </div>
-
-                    {/* Right Panel: Recent Captures Gallery */}
-                    <div className="content-panel">
-                        <div className="panel-header">Recent Captures</div>
-                        <div className="panel-body">
-                            {individual?.total_sightings === 0 ? (
-                                <EmptyMsg text="No images available for this individual yet." />
-                            ) : (
-                                <div className="profile-gallery">
-                                    {/* These are placeholder boxes for the UI until a specific endpoint for fetching an individual's images is wired up */}
-                                    <div className="gallery-image-wrapper">
-                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
-                                        <div className="gallery-date-tag">Most Recent</div>
-                                    </div>
-                                    <div className="gallery-image-wrapper">
-                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
-                                        <div className="gallery-date-tag">Archive</div>
-                                    </div>
-                                    <div className="gallery-image-wrapper">
-                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
-                                        <div className="gallery-date-tag">Archive</div>
-                                    </div>
-                                    <div className="gallery-image-wrapper">
-                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', color: '#d1d5db' }}>📷</div>
-                                        <div className="gallery-date-tag">First Sighting</div>
-                                    </div>
-                                </div>
+                    )}
+                    {tab === 'notes' && (
+                        <div className="wt-notes">
+                            <h3>Re-identification (prototype)</h3>
+                            <p>
+                                Offline embeddings (MegaDescriptor-L-384) support matching new crops to known
+                                individuals. The API exposes a short summary for demos — no GPU required on the server.
+                            </p>
+                            {reidInfo && (
+                                <ul className="wt-reid-list">
+                                    {typeof reidInfo.model_name === 'string' && (
+                                        <li>
+                                            <strong>Model:</strong> {reidInfo.model_name}
+                                        </li>
+                                    )}
+                                    {typeof reidInfo.metrics_closed_set_rank1 === 'string' && (
+                                        <li>
+                                            <strong>Rank-1 (typical):</strong> {reidInfo.metrics_closed_set_rank1}
+                                        </li>
+                                    )}
+                                    {typeof reidInfo.metrics_with_unknown_gate === 'string' && (
+                                        <li>
+                                            <strong>With UNKNOWN gate:</strong> {reidInfo.metrics_with_unknown_gate}
+                                        </li>
+                                    )}
+                                    {Array.isArray(reidInfo.why_not_higher) && (
+                                        <li>
+                                            <strong>Why accuracy is limited:</strong>
+                                            <ul>
+                                                {(reidInfo.why_not_higher as string[]).map((line) => (
+                                                    <li key={line.slice(0, 40)}>{line}</li>
+                                                ))}
+                                            </ul>
+                                        </li>
+                                    )}
+                                </ul>
                             )}
-                            <div style={{ marginTop: '1.5rem', textAlign: 'center' }}>
-                                <button className="btn-export" style={{ backgroundColor: '#f3f4f6', color: '#374151', width: '100%', justifyContent: 'center', boxShadow: 'none' }}>
-                                    View All Sightings Data
-                                </button>
-                            </div>
+                            <p className="wt-doc-hint">
+                                Full narrative for your professor: <code>docs/REID_MODEL_RESULTS.md</code> in the repo.
+                            </p>
                         </div>
-                    </div>
-
+                    )}
                 </div>
             </div>
         </div>
