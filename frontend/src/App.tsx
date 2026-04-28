@@ -3045,42 +3045,260 @@ function LoginPage() {
     };
 
     return (
-        <div style={{ maxWidth: 400, margin: '4rem auto' }}>
-            <div className="page-header" style={{ textAlign: 'center' }}><h2>🌿 Wildlife AI Platform</h2><p>Sign in to continue</p></div>
-            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
-                <button className={`btn ${tab === 'login' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setTab('login')} style={{ flex: 1 }}>Login</button>
-                <button className={`btn ${tab === 'register' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setTab('register')} style={{ flex: 1 }}>Register</button>
-            </div>
-            <div className="card">
-                <div className="card-body">
-                    <form onSubmit={tab === 'login' ? handleLogin : handleRegister}>
+        <div style={{ 
+            minHeight: '100vh', 
+            background: 'linear-gradient(135deg, #f0fdf4 0%, #e8f5e9 50%, #f0fdf4 100%)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '2rem'
+        }}>
+            <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))',
+                gap: '2rem',
+                maxWidth: '900px',
+                width: '100%',
+                alignItems: 'center'
+            }}>
+                {/* Left Side - Branding & Features */}
+                <div style={{
+                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                    borderRadius: '16px',
+                    padding: '3rem 2rem',
+                    color: 'white',
+                    boxShadow: '0 20px 60px rgba(16, 185, 129, 0.15)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between',
+                    minHeight: '500px',
+                    order: window.innerWidth < 768 ? 2 : 1
+                }}>
+                    <div>
+                        <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🌿</div>
+                        <h1 style={{ fontSize: '2rem', fontWeight: '700', marginBottom: '0.5rem', lineHeight: '1.2' }}>
+                            Wildlife AI Platform
+                        </h1>
+                        <p style={{ fontSize: '0.95rem', opacity: 0.9, marginBottom: '2rem' }}>
+                            Advanced wildlife monitoring and conservation technology
+                        </p>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                        {[
+                            { icon: '🎯', text: 'AI-Powered Detection' },
+                            { icon: '📊', text: 'Real-time Analytics' },
+                            { icon: '🔒', text: 'Secure & Reliable' }
+                        ].map((item, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                                <div style={{ fontSize: '1.5rem' }}>{item.icon}</div>
+                                <p style={{ margin: 0, fontSize: '0.9rem', fontWeight: '500' }}>{item.text}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Right Side - Form */}
+                <div style={{
+                    background: 'white',
+                    borderRadius: '16px',
+                    padding: '2.5rem',
+                    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.08)',
+                    order: window.innerWidth < 768 ? 1 : 2
+                }}>
+                    {/* Tab Buttons */}
+                    <div style={{ 
+                        display: 'flex', 
+                        gap: '0.75rem', 
+                        marginBottom: '2rem',
+                        background: '#f3f4f6',
+                        padding: '0.5rem',
+                        borderRadius: '10px'
+                    }}>
+                        {['login', 'register'].map((t) => (
+                            <button
+                                key={t}
+                                onClick={() => setTab(t as 'login' | 'register')}
+                                style={{
+                                    flex: 1,
+                                    padding: '0.75rem 1rem',
+                                    border: 'none',
+                                    borderRadius: '8px',
+                                    fontSize: '0.95rem',
+                                    fontWeight: '600',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.3s ease',
+                                    background: tab === t ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)' : 'transparent',
+                                    color: tab === t ? 'white' : '#6b7280'
+                                }}
+                            >
+                                {t === 'login' ? '🔐 Sign In' : '✨ Register'}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Form Title */}
+                    <div style={{ marginBottom: '2rem' }}>
+                        <h2 style={{ fontSize: '1.5rem', fontWeight: '700', color: '#1f2937', margin: '0 0 0.5rem 0' }}>
+                            {tab === 'login' ? 'Welcome Back' : 'Join Us'}
+                        </h2>
+                        <p style={{ color: '#6b7280', margin: 0, fontSize: '0.9rem' }}>
+                            {tab === 'login' ? 'Sign in to your account to continue' : 'Create a new account to get started'}
+                        </p>
+                    </div>
+
+                    {/* Form */}
+                    <form onSubmit={tab === 'login' ? handleLogin : handleRegister} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
                         {tab === 'register' && (
-                            <div style={{ marginBottom: '1rem' }}>
-                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Full Name</label>
-                                <input className="filter-select" style={{ width: '100%' }} value={fullName} onChange={(e) => setFullName(e.target.value)} />
+                            <div>
+                                <label style={{ fontSize: '0.85rem', fontWeight: '600', display: 'block', marginBottom: '0.5rem', color: '#374151' }}>
+                                    👤 Full Name
+                                </label>
+                                <input 
+                                    type="text"
+                                    value={fullName} 
+                                    onChange={(e) => setFullName(e.target.value)}
+                                    placeholder="John Doe"
+                                    style={{
+                                        width: '100%',
+                                        padding: '0.875rem 1rem',
+                                        border: '2px solid #e5e7eb',
+                                        borderRadius: '8px',
+                                        fontSize: '0.9rem',
+                                        transition: 'all 0.3s ease',
+                                        boxSizing: 'border-box',
+                                        outline: 'none'
+                                    }}
+                                    onFocus={(e) => e.target.style.borderColor = '#10b981'}
+                                    onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
+                                />
                             </div>
                         )}
-                        <div style={{ marginBottom: '1rem' }}>
-                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Email</label>
-                            <input className="filter-select" style={{ width: '100%' }} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+
+                        <div>
+                            <label style={{ fontSize: '0.85rem', fontWeight: '600', display: 'block', marginBottom: '0.5rem', color: '#374151' }}>
+                                📧 Email Address
+                            </label>
+                            <input 
+                                type="email" 
+                                value={email} 
+                                onChange={(e) => setEmail(e.target.value)}
+                                placeholder="you@example.com"
+                                required
+                                style={{
+                                    width: '100%',
+                                    padding: '0.875rem 1rem',
+                                    border: '2px solid #e5e7eb',
+                                    borderRadius: '8px',
+                                    fontSize: '0.9rem',
+                                    transition: 'all 0.3s ease',
+                                    boxSizing: 'border-box',
+                                    outline: 'none'
+                                }}
+                                onFocus={(e) => e.target.style.borderColor = '#10b981'}
+                                onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
+                            />
                         </div>
-                        <div style={{ marginBottom: '1rem' }}>
-                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Password</label>
-                            <input className="filter-select" style={{ width: '100%' }} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} />
+
+                        <div>
+                            <label style={{ fontSize: '0.85rem', fontWeight: '600', display: 'block', marginBottom: '0.5rem', color: '#374151' }}>
+                                🔑 Password
+                            </label>
+                            <input 
+                                type="password" 
+                                value={password} 
+                                onChange={(e) => setPassword(e.target.value)}
+                                placeholder="••••••••"
+                                required 
+                                minLength={8}
+                                style={{
+                                    width: '100%',
+                                    padding: '0.875rem 1rem',
+                                    border: '2px solid #e5e7eb',
+                                    borderRadius: '8px',
+                                    fontSize: '0.9rem',
+                                    transition: 'all 0.3s ease',
+                                    boxSizing: 'border-box',
+                                    outline: 'none'
+                                }}
+                                onFocus={(e) => e.target.style.borderColor = '#10b981'}
+                                onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
+                            />
                         </div>
+
                         {tab === 'register' && (
-                            <div style={{ marginBottom: '1rem' }}>
-                                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.25rem' }}>Role</label>
-                                <select className="filter-select" value={role} onChange={(e) => setRole(e.target.value)}>
-                                    <option value="reviewer">Reviewer</option><option value="researcher">Researcher</option><option value="admin">Admin</option>
+                            <div>
+                                <label style={{ fontSize: '0.85rem', fontWeight: '600', display: 'block', marginBottom: '0.5rem', color: '#374151' }}>
+                                    👨‍💼 Role
+                                </label>
+                                <select 
+                                    value={role} 
+                                    onChange={(e) => setRole(e.target.value)}
+                                    style={{
+                                        width: '100%',
+                                        padding: '0.875rem 1rem',
+                                        border: '2px solid #e5e7eb',
+                                        borderRadius: '8px',
+                                        fontSize: '0.9rem',
+                                        transition: 'all 0.3s ease',
+                                        boxSizing: 'border-box',
+                                        outline: 'none',
+                                        cursor: 'pointer'
+                                    }}
+                                    onFocus={(e) => e.currentTarget.style.borderColor = '#10b981'}
+                                    onBlur={(e) => e.currentTarget.style.borderColor = '#e5e7eb'}
+                                >
+                                    <option value="reviewer">👁️ Reviewer</option>
+                                    <option value="researcher">🔬 Researcher</option>
+                                    <option value="admin">⚙️ Admin</option>
                                 </select>
                             </div>
                         )}
-                        {error && <p style={{ color: 'var(--danger)', fontSize: '0.85rem', marginBottom: '0.5rem' }}>{error}</p>}
-                        <button className="btn btn-primary" type="submit" disabled={loading} style={{ width: '100%', justifyContent: 'center' }}>
-                            {loading ? 'Please wait...' : tab === 'login' ? 'Sign In' : 'Create Account'}
+
+                        {error && (
+                            <div style={{
+                                background: '#fee2e2',
+                                border: '2px solid #fca5a5',
+                                borderRadius: '8px',
+                                padding: '0.75rem 1rem',
+                                fontSize: '0.85rem',
+                                color: '#991b1b'
+                            }}>
+                                ⚠️ {error}
+                            </div>
+                        )}
+
+                        <button 
+                            type="submit" 
+                            disabled={loading}
+                            style={{
+                                padding: '0.875rem 1.5rem',
+                                border: 'none',
+                                borderRadius: '8px',
+                                fontSize: '0.95rem',
+                                fontWeight: '700',
+                                cursor: loading ? 'not-allowed' : 'pointer',
+                                background: loading ? '#d1d5db' : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                                color: 'white',
+                                transition: 'all 0.3s ease',
+                                marginTop: '0.5rem',
+                                boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)',
+                                opacity: loading ? 0.7 : 1
+                            }}
+                            onMouseEnter={(e) => !loading && (e.currentTarget.style.boxShadow = '0 8px 20px rgba(16, 185, 129, 0.4)')}
+                            onMouseLeave={(e) => !loading && (e.currentTarget.style.boxShadow = '0 4px 12px rgba(16, 185, 129, 0.3)')}
+                        >
+                            {loading ? '⏳ Please wait...' : tab === 'login' ? ' Sign In' : ' Create Account'}
                         </button>
                     </form>
+
+                    {/* Footer */}
+                    <div style={{ textAlign: 'center', marginTop: '1.5rem', fontSize: '0.85rem', color: '#6b7280' }}>
+                        {tab === 'login' ? (
+                            <p>Don't have an account? <span style={{ color: '#10b981', fontWeight: '600', cursor: 'pointer' }} onClick={() => setTab('register')}>Register here</span></p>
+                        ) : (
+                            <p>Already have an account? <span style={{ color: '#10b981', fontWeight: '600', cursor: 'pointer' }} onClick={() => setTab('login')}>Sign in here</span></p>
+                        )}
+                    </div>
                 </div>
             </div>
         </div>
