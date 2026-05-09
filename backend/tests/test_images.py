@@ -60,6 +60,14 @@ async def test_get_image_detail(client: AsyncClient, sample_data):
 async def test_get_image_detail_includes_detection_annotations(client: AsyncClient, test_user, sample_data):
     det = sample_data["detections"][0]
     img_id = det.image_id
+    create_ind = await client.post("/api/individuals/", json={
+        "individual_id": "01Q1",
+        "species": "Spotted-tailed Quoll",
+        "ref_left_detection_id": sample_data["detections"][0].id,
+        "ref_right_detection_id": sample_data["detections"][1].id,
+    }, headers=auth_header(test_user))
+    assert create_ind.status_code == 201
+
     await client.post("/api/annotations/", json={
         "detection_id": det.id,
         "is_correct": True,
@@ -80,6 +88,24 @@ async def test_get_image_detail_includes_detection_annotations(client: AsyncClie
 async def test_get_image_not_found(client: AsyncClient):
     resp = await client.get("/api/images/9999")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_missed_detection_preserves_optional_metadata(client: AsyncClient, test_user, sample_data):
+    img_id = sample_data["images"][3].id
+    resp = await client.post(f"/api/images/{img_id}/missed-detection", json={
+        "bbox_x": 0.1,
+        "bbox_y": 0.2,
+        "bbox_w": 0.3,
+        "bbox_h": 0.4,
+        "species": "Spotted-tailed Quoll",
+        "individual_id": "02Q2",
+        "notes": "Visible tail spots",
+    }, headers=auth_header(test_user))
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["individual_id"] == "02Q2"
+    assert data["notes"] == "Visible tail spots"
 
 
 @pytest.mark.asyncio
