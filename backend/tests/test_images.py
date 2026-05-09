@@ -60,6 +60,14 @@ async def test_get_image_detail(client: AsyncClient, sample_data):
 async def test_get_image_detail_includes_detection_annotations(client: AsyncClient, test_user, sample_data):
     det = sample_data["detections"][0]
     img_id = det.image_id
+    create_ind = await client.post("/api/individuals/", json={
+        "individual_id": "01Q1",
+        "species": "Spotted-tailed Quoll",
+        "ref_left_detection_id": sample_data["detections"][0].id,
+        "ref_right_detection_id": sample_data["detections"][1].id,
+    }, headers=auth_header(test_user))
+    assert create_ind.status_code == 201
+
     await client.post("/api/annotations/", json={
         "detection_id": det.id,
         "is_correct": True,
