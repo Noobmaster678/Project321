@@ -2,6 +2,8 @@
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.conftest import auth_header
+
 
 @pytest.mark.asyncio
 async def test_list_detections_empty(client: AsyncClient):
@@ -23,6 +25,31 @@ async def test_filter_by_species(client: AsyncClient, sample_data):
     data = resp.json()
     assert data["total"] == 1
     assert "quoll" in data["items"][0]["species"].lower()
+
+
+@pytest.mark.asyncio
+async def test_filter_by_individual_id(client: AsyncClient, test_user, sample_data):
+    dets = sample_data["detections"]
+    create_ind = await client.post("/api/individuals/", json={
+        "individual_id": "02Q2",
+        "species": "Spotted-tailed Quoll",
+        "ref_left_detection_id": dets[0].id,
+        "ref_right_detection_id": dets[1].id,
+    }, headers=auth_header(test_user))
+    assert create_ind.status_code == 201
+
+    create_ann = await client.post("/api/annotations/", json={
+        "detection_id": dets[0].id,
+        "is_correct": True,
+        "individual_id": "02Q2",
+    }, headers=auth_header(test_user))
+    assert create_ann.status_code == 201
+
+    resp = await client.get("/api/detections/", params={"individual_id": "02Q2"})
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["id"] == dets[0].id
+    assert data["items"][0]["individual_id"] == "02Q2"
 
 
 @pytest.mark.asyncio

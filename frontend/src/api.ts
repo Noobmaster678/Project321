@@ -93,6 +93,7 @@ export interface Detection {
     model_version: string | null;
     crop_path: string | null;
     review_status: string | null;
+    individual_id?: string | null;
     created_at: string | null;
     annotations?: AnnotationData[];
 }
@@ -420,7 +421,7 @@ export async function fetchDetections(params: {
     page?: number; per_page?: number; species?: string; min_confidence?: number;
     max_confidence?: number; image_id?: number; camera_id?: number;
     collection_id?: number; date_from?: string; date_to?: string;
-    review_status?: string; category?: string;
+    review_status?: string; category?: string; individual_id?: string;
 }): Promise<PaginatedResponse<Detection>> {
     const sp = new URLSearchParams();
     if (params.page) sp.set('page', String(params.page));
@@ -435,6 +436,7 @@ export async function fetchDetections(params: {
     if (params.date_to) sp.set('date_to', params.date_to);
     if (params.review_status) sp.set('review_status', params.review_status);
     if (params.category) sp.set('category', params.category);
+    if (params.individual_id) sp.set('individual_id', params.individual_id);
     const res = await fetch(`${API_BASE}/detections/?${sp}`);
     if (!res.ok) throw new Error('Failed to fetch detections');
     return res.json();
@@ -565,7 +567,10 @@ export function storageUrl(path: string): string {
 // ---- Missed detection (user correction: "model said no animal but there is one")
 export async function createMissedDetection(
     imageId: number,
-    payload: { bbox_x: number; bbox_y: number; bbox_w: number; bbox_h: number; species: string; flag_for_retraining?: boolean },
+    payload: {
+        bbox_x: number; bbox_y: number; bbox_w: number; bbox_h: number; species: string;
+        individual_id?: string; notes?: string; flag_for_retraining?: boolean;
+    },
 ): Promise<{ id: number; image_id: number; species: string; created_at: string | null }> {
     const res = await apiFetch(`${API_BASE}/images/${imageId}/missed-detection`, {
         method: 'POST',
