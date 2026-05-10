@@ -239,14 +239,13 @@ export async function login(email: string, password: string): Promise<UserData> 
  * param email - The new user's email address.
  * param password - The new user's desired password.
  * param fullName - The user's first and last name.
- * param role - The authorization role (e.g., 'admin', 'researcher').
  * returns A Promise resolving to the newly created UserData.
  */
-export async function register(email: string, password: string, fullName: string, role: string): Promise<UserData> {
+export async function register(email: string, password: string, fullName: string): Promise<UserData> {
     const res = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, full_name: fullName, role }),
+        body: JSON.stringify({ email, password, full_name: fullName }),
     });
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
