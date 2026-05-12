@@ -19,17 +19,17 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
-    """Create a new user account.
+    """Create a new reviewer account.
     
     Args:
-        payload: User registration data (email, password, full_name, role)
+        payload: User registration data (email, password, full_name)
         db: Database session
         
     Returns:
         UserOut: The created user profile
         
     Raises:
-        HTTPException: 400 if email already exists or invalid role
+        HTTPException: 400 if email already exists or an elevated role is requested
     """
     # Check if email already registered
     existing_user = (
@@ -42,12 +42,11 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
             detail="Email already registered"
         )
 
-    # Validate role
-    valid_roles = ("admin", "researcher", "reviewer")
-    if payload.role not in valid_roles:
+    # Self-service signup must not grant elevated roles. Admins can promote users later.
+    if payload.role != "reviewer":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}"
+            detail="Self-service registration creates reviewer accounts only"
         )
 
     # Create new user with hashed password
@@ -55,7 +54,7 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
         email=payload.email,
         full_name=payload.full_name,
         hashed_password=hash_password(payload.password),
-        role=payload.role,
+        role="reviewer",
     )
     db.add(new_user)
     await db.flush()

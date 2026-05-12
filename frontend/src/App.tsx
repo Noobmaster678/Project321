@@ -419,7 +419,7 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
     const [notes, setNotes] = useState('');
     const [lastAction, setLastAction] = useState<string | null>(null);
 
-    // FIX A: Pre-fill the input box if the backend already has an ID saved
+    // Pre-fill the input box if the backend already has an ID saved.
     useEffect(() => {
         if (!det) return;
         setDetail(null);
@@ -429,7 +429,8 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
         setLastAction(null);
         fetchDetectionDetail(det.id).then((d) => {
             setDetail(d);
-            if (d.individual_id) setIndividualId(d.individual_id); // Ensure details load it too
+            const existingId = d.annotations.find((ann) => ann.individual_id)?.individual_id;
+            if (existingId) setIndividualId(existingId);
         }).catch(() => {});
     }, [det?.id]);
 
@@ -463,7 +464,7 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
             await createAnnotation({
                 detection_id: det.id,
                 is_correct: true,
-                corrected_species: det.species, // Prevent the backend from accidentally reverting the species
+                corrected_species: det.species ?? undefined,
                 individual_id: individualId,
                 flag_for_retraining: false,
                 notes: notes || undefined,
@@ -1720,8 +1721,6 @@ function ReviewImage() {
     const [step, setStep] = useState<'choose' | 'annotate' | 'done'>('choose');
     const [bbox, setBbox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
     const [species, setSpecies] = useState('Spotted-tailed Quoll');
-    const [individualId, setIndividualId] = useState('');
-    const [notes, setNotes] = useState('');
     const [saving, setSaving] = useState(false);
 
     useEffect(() => {
@@ -1750,8 +1749,6 @@ function ReviewImage() {
             bbox_h: bbox.h, 
             species, 
             flag_for_retraining: true,
-            individual_id: individualId || undefined, // <-- ADD THIS
-            notes: notes || undefined                 // <-- ADD THIS
         });
         setStep('done');
     } catch { }
@@ -1834,14 +1831,6 @@ function ReviewImage() {
                                         <option>Unknown</option>
                                         <option>Other</option>
                                     </select>
-                                </div>
-                                <div className="review-field">
-                                    <label>Individual ID (optional, e.g. 02Q2)</label>
-                                    <input className="filter-select" style={{ width: '100%' }} value={individualId} onChange={(e) => setIndividualId(e.target.value)} placeholder="Leave blank if unknown" />
-                                </div>
-                                <div className="review-field">
-                                    <label>Notes (optional)</label>
-                                    <textarea className="filter-select" style={{ width: '100%', minHeight: 50, resize: 'vertical' }} value={notes} onChange={(e) => setNotes(e.target.value)} />
                                 </div>
                                 <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
                                     <button className="btn btn-primary" onClick={submitAnimal} disabled={!bbox || saving}>{saving ? 'Saving...' : 'Save Annotation'}</button>
@@ -3107,7 +3096,6 @@ function LoginPage() {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [fullName, setFullName] = useState('');
-    const [role, setRole] = useState('reviewer');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
@@ -3122,7 +3110,7 @@ function LoginPage() {
     const handleRegister = async (e: React.FormEvent) => {
         e.preventDefault(); setError(''); setLoading(true);
         try {
-            await register(email, password, fullName, role);
+            await register(email, password, fullName);
             await login(email, password);
         } catch (err: any) { setError(err.message); }
         setLoading(false);
@@ -3308,35 +3296,6 @@ function LoginPage() {
                                 onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
                             />
                         </div>
-
-                        {tab === 'register' && (
-                            <div>
-                                <label style={{ fontSize: '0.85rem', fontWeight: '600', display: 'block', marginBottom: '0.5rem', color: '#374151' }}>
-                                    👨‍💼 Role
-                                </label>
-                                <select 
-                                    value={role} 
-                                    onChange={(e) => setRole(e.target.value)}
-                                    style={{
-                                        width: '100%',
-                                        padding: '0.875rem 1rem',
-                                        border: '2px solid #e5e7eb',
-                                        borderRadius: '8px',
-                                        fontSize: '0.9rem',
-                                        transition: 'all 0.3s ease',
-                                        boxSizing: 'border-box',
-                                        outline: 'none',
-                                        cursor: 'pointer'
-                                    }}
-                                    onFocus={(e) => e.currentTarget.style.borderColor = '#10b981'}
-                                    onBlur={(e) => e.currentTarget.style.borderColor = '#e5e7eb'}
-                                >
-                                    <option value="reviewer">👁️ Reviewer</option>
-                                    <option value="researcher">🔬 Researcher</option>
-                                    <option value="admin">⚙️ Admin</option>
-                                </select>
-                            </div>
-                        )}
 
                         {error && (
                             <div style={{
