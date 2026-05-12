@@ -8,7 +8,7 @@ import {
     fetchStats, fetchImages, fetchIndividuals, fetchCollectionStats, fetchCameraStats,
     fetchSpeciesCounts, fetchReport, fetchDetectionDetail, fetchAnnotations, fetchDetections,
     createAnnotation, uploadBatch, fetchJobStatus, fetchUsers, changeUserRole,
-    fetchSystemMetrics, register, getExportUrl, getQuollExportUrl, getMetadataExportUrl, fetchImagesBySpecies, fetchImageDetail,
+    fetchSystemMetrics, register, getToken, getExportUrl, getQuollExportUrl, getMetadataExportUrl, fetchImagesBySpecies, fetchImageDetail,
     storageUrl, createMissedDetection, fetchReviewQueue, fetchIndividualGallery, fetchReidInfo, createIndividual,
     type DashboardStats, type ImageData, type IndividualData, type CollectionStat,
     type CameraStat, type SpeciesCount, type PaginatedResponse, type ReportData,
@@ -3021,6 +3021,7 @@ function AdminPanel() {
     const [users, setUsers] = useState<UserData[]>([]);
     const [metrics, setMetrics] = useState<any>(null);
     const [loading, setLoading] = useState(true);
+    const [exportError, setExportError] = useState<string | null>(null);
 
     useEffect(() => {
         Promise.all([fetchUsers(), fetchSystemMetrics()])
@@ -3031,6 +3032,28 @@ function AdminPanel() {
     const onRoleChange = async (userId: number, role: string) => {
         const updated = await changeUserRole(userId, role);
         setUsers(users.map((u) => (u.id === userId ? updated : u)));
+    };
+
+    const downloadAdminExport = async (url: string, filename: string) => {
+        setExportError(null);
+        try {
+            const token = getToken();
+            const res = await fetch(url, {
+                headers: token ? { Authorization: `Bearer ${token}` } : {},
+            });
+            if (!res.ok) throw new Error(`Download failed (${res.status})`);
+            const blob = await res.blob();
+            const objectUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = objectUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(objectUrl);
+        } catch (e: any) {
+            setExportError(e.message || 'Download failed');
+        }
     };
 
     if (loading) return <LoadingState />;
@@ -3078,9 +3101,10 @@ function AdminPanel() {
             <div className="card" style={{ marginTop: '1.5rem' }}>
                 <div className="card-header"><h3>Dataset Exports</h3></div>
                 <div className="card-body" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    <a href={getQuollExportUrl('csv')} className="btn btn-primary" download>Export Quoll Detections</a>
-                    <a href={getMetadataExportUrl('csv')} className="btn btn-outline" download>Export Full Metadata</a>
+                    <button className="btn btn-primary" onClick={() => downloadAdminExport(getQuollExportUrl('csv'), 'quoll_detections.csv')}>Export Quoll Detections</button>
+                    <button className="btn btn-outline" onClick={() => downloadAdminExport(getMetadataExportUrl('csv'), 'wildlife_metadata.csv')}>Export Full Metadata</button>
                     <a href={getExportUrl('json')} className="btn btn-outline" download>Export Report JSON</a>
+                    {exportError && <div className="error-message" style={{ flexBasis: '100%' }}>{exportError}</div>}
                 </div>
             </div>
         </>

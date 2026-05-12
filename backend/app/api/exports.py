@@ -17,7 +17,7 @@ from backend.app.models.detection import Detection
 from backend.app.models.image import Image
 from backend.app.models.annotation import Annotation
 from backend.app.models.camera import Camera
-from backend.app.utils.dependencies import get_current_user
+from backend.app.utils.dependencies import require_role
 
 router = APIRouter(prefix="/exports", tags=["Exports"])
 
@@ -26,6 +26,7 @@ router = APIRouter(prefix="/exports", tags=["Exports"])
 async def export_quoll_detections(
     min_confidence: float = 0.0,
     format: str = Query("csv", pattern="^(csv|json)$"),
+    _user=Depends(require_role("researcher", "admin")),
     db: AsyncSession = Depends(get_db),
 ):
     """Export all quoll detections as CSV or JSON."""
@@ -79,6 +80,7 @@ async def export_quoll_detections(
 @router.get("/metadata")
 async def export_metadata(
     format: str = Query("csv", pattern="^(csv|json)$"),
+    _user=Depends(require_role("researcher", "admin")),
     db: AsyncSession = Depends(get_db),
 ):
     """Export full metadata: images + detections + annotations."""
@@ -139,6 +141,7 @@ async def export_metadata(
 async def export_crops_zip(
     species: str = Query("quoll", description="Species filter"),
     min_confidence: float = 0.0,
+    _user=Depends(require_role("researcher", "admin")),
     db: AsyncSession = Depends(get_db),
 ):
     """Export a ZIP of cropped detection images for a given species."""
