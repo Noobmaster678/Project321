@@ -420,7 +420,7 @@ export async function fetchDetections(params: {
     page?: number; per_page?: number; species?: string; min_confidence?: number;
     max_confidence?: number; image_id?: number; camera_id?: number;
     collection_id?: number; date_from?: string; date_to?: string;
-    review_status?: string; category?: string;
+    review_status?: string; individual_id?: string; category?: string;
 }): Promise<PaginatedResponse<Detection>> {
     const sp = new URLSearchParams();
     if (params.page) sp.set('page', String(params.page));
@@ -434,6 +434,7 @@ export async function fetchDetections(params: {
     if (params.date_from) sp.set('date_from', params.date_from);
     if (params.date_to) sp.set('date_to', params.date_to);
     if (params.review_status) sp.set('review_status', params.review_status);
+    if (params.individual_id) sp.set('individual_id', params.individual_id);
     if (params.category) sp.set('category', params.category);
     const res = await fetch(`${API_BASE}/detections/?${sp}`);
     if (!res.ok) throw new Error('Failed to fetch detections');

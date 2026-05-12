@@ -28,6 +28,7 @@ async def list_detections(
     date_from: str | None = Query(None, description="ISO date YYYY-MM-DD"),
     date_to: str | None = Query(None, description="ISO date YYYY-MM-DD"),
     review_status: str | None = Query(None, description="unreviewed, verified, corrected, flagged"),
+    individual_id: str | None = None,
     category: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -45,6 +46,12 @@ async def list_detections(
         query = query.where(Detection.classification_confidence <= max_confidence)
     if image_id is not None:
         query = query.where(Detection.image_id == image_id)
+    if individual_id is not None:
+        query = (
+            query.join(Annotation, Annotation.detection_id == Detection.id)
+            .where(Annotation.individual_id == individual_id)
+            .distinct()
+        )
     if category is not None:
         query = query.where(Detection.category == category)
     if camera_id is not None:
