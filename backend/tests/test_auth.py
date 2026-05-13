@@ -13,7 +13,7 @@ async def test_register(client: AsyncClient):
     assert resp.status_code == 201
     data = resp.json()
     assert data["email"] == "new@example.com"
-    assert data["role"] == "researcher"
+    assert data["role"] == "reviewer"
     assert "hashed_password" not in data
 
 
@@ -31,9 +31,14 @@ async def test_register_short_password(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_register_invalid_role(client: AsyncClient):
-    resp = await client.post("/api/auth/register", json={"email": "bad@example.com", "password": "password123", "role": "superuser"})
-    assert resp.status_code == 400
+async def test_register_ignores_submitted_role(client: AsyncClient):
+    resp = await client.post("/api/auth/register", json={
+        "email": "admin-attempt@example.com",
+        "password": "password123",
+        "role": "admin",
+    })
+    assert resp.status_code == 201
+    assert resp.json()["role"] == "reviewer"
 
 
 @pytest.mark.asyncio
