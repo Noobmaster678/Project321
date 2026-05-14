@@ -463,7 +463,7 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
             await createAnnotation({
                 detection_id: det.id,
                 is_correct: true,
-                corrected_species: det.species, // Prevent the backend from accidentally reverting the species
+                corrected_species: det.species || undefined, // Prevent the backend from accidentally reverting the species
                 individual_id: individualId,
                 flag_for_retraining: false,
                 notes: notes || undefined,

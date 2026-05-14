@@ -15,6 +15,18 @@ from backend.app.schemas.schemas import DetectionOut, DetectionDetail, Paginated
 router = APIRouter(prefix="/detections", tags=["Detections"])
 
 
+def _detection_out(det: Detection) -> DetectionOut:
+    """Include the latest assigned individual ID alongside the detection fields."""
+    data = DetectionOut.model_validate(det).model_dump()
+    assigned = sorted(
+        (ann for ann in det.annotations if ann.individual_id),
+        key=lambda ann: ann.id or 0,
+        reverse=True,
+    )
+    data["individual_id"] = assigned[0].individual_id if assigned else None
+    return DetectionOut(**data)
+
+
 @router.get("/", response_model=PaginatedResponse)
 async def list_detections(
     page: int = Query(1, ge=1),
@@ -28,6 +40,7 @@ async def list_detections(
     date_from: str | None = Query(None, description="ISO date YYYY-MM-DD"),
     date_to: str | None = Query(None, description="ISO date YYYY-MM-DD"),
     review_status: str | None = Query(None, description="unreviewed, verified, corrected, flagged"),
+    individual_id: str | None = None,
     category: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -76,15 +89,21 @@ async def list_detections(
         elif review_status == "flagged":
             flagged_ids = select(Annotation.detection_id).where(Annotation.flag_for_retraining == True).distinct()  # noqa: E712
             query = query.where(Detection.id.in_(flagged_ids))
+    if individual_id is not None:
+        query = (
+            query.join(Annotation, Annotation.detection_id == Detection.id)
+            .where(Annotation.individual_id == individual_id)
+            .distinct()
+        )
 
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.offset((page - 1) * per_page).limit(per_page)
+    query = query.options(selectinload(Detection.annotations)).offset((page - 1) * per_page).limit(per_page)
     detections = (await db.execute(query)).scalars().all()
 
     return PaginatedResponse(
-        items=[DetectionOut.model_validate(d) for d in detections],
+        items=[_detection_out(d) for d in detections],
         total=total, page=page, per_page=per_page,
         pages=(total + per_page - 1) // per_page if per_page > 0 else 0,
     )
@@ -178,7 +197,7 @@ async def get_detection(detection_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Detection not found")
 
     return DetectionDetail(
-        **DetectionOut.model_validate(det).model_dump(),
+        **_detection_out(det).model_dump(),
         image=ImageOut.model_validate(det.image) if det.image else None,
         camera=CameraOut.model_validate(det.image.camera) if det.image and det.image.camera else None,
         annotations=[AnnotationOut.model_validate(a) for a in det.annotations],
