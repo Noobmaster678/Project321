@@ -8,13 +8,24 @@ from backend.tests.conftest import auth_header
 @pytest.mark.asyncio
 async def test_register(client: AsyncClient):
     resp = await client.post("/api/auth/register", json={
-        "email": "new@example.com", "password": "securepass1", "full_name": "New User", "role": "researcher",
+        "email": "new@example.com", "password": "securepass1", "full_name": "New User",
     })
     assert resp.status_code == 201
     data = resp.json()
     assert data["email"] == "new@example.com"
-    assert data["role"] == "researcher"
+    assert data["role"] == "reviewer"
     assert "hashed_password" not in data
+
+
+@pytest.mark.asyncio
+async def test_register_rejects_elevated_role(client: AsyncClient):
+    resp = await client.post("/api/auth/register", json={
+        "email": "admin-signup@example.com",
+        "password": "securepass1",
+        "role": "admin",
+    })
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Public registration only creates reviewer accounts"
 
 
 @pytest.mark.asyncio

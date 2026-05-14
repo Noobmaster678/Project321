@@ -2,6 +2,8 @@
 import pytest
 from httpx import AsyncClient
 
+from backend.app.models.annotation import Annotation
+
 
 @pytest.mark.asyncio
 async def test_list_detections_empty(client: AsyncClient):
@@ -23,6 +25,27 @@ async def test_filter_by_species(client: AsyncClient, sample_data):
     data = resp.json()
     assert data["total"] == 1
     assert "quoll" in data["items"][0]["species"].lower()
+
+
+@pytest.mark.asyncio
+async def test_filter_by_individual_id(client: AsyncClient, db, sample_data):
+    db.add(Annotation(
+        detection_id=sample_data["detections"][0].id,
+        is_correct=True,
+        individual_id="02Q2",
+    ))
+    db.add(Annotation(
+        detection_id=sample_data["detections"][1].id,
+        is_correct=True,
+        individual_id="07Q2",
+    ))
+    await db.commit()
+
+    resp = await client.get("/api/detections/", params={"individual_id": "02Q2"})
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["id"] == sample_data["detections"][0].id
+    assert data["items"][0]["individual_id"] == "02Q2"
 
 
 @pytest.mark.asyncio

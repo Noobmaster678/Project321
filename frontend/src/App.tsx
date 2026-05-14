@@ -463,7 +463,7 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
             await createAnnotation({
                 detection_id: det.id,
                 is_correct: true,
-                corrected_species: det.species, // Prevent the backend from accidentally reverting the species
+                corrected_species: det.species || undefined, // Prevent the backend from accidentally reverting the species
                 individual_id: individualId,
                 flag_for_retraining: false,
                 notes: notes || undefined,
@@ -3107,7 +3107,6 @@ function LoginPage() {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [fullName, setFullName] = useState('');
-    const [role, setRole] = useState('reviewer');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
@@ -3122,7 +3121,7 @@ function LoginPage() {
     const handleRegister = async (e: React.FormEvent) => {
         e.preventDefault(); setError(''); setLoading(true);
         try {
-            await register(email, password, fullName, role);
+            await register(email, password, fullName);
             await login(email, password);
         } catch (err: any) { setError(err.message); }
         setLoading(false);
@@ -3308,35 +3307,6 @@ function LoginPage() {
                                 onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
                             />
                         </div>
-
-                        {tab === 'register' && (
-                            <div>
-                                <label style={{ fontSize: '0.85rem', fontWeight: '600', display: 'block', marginBottom: '0.5rem', color: '#374151' }}>
-                                    👨‍💼 Role
-                                </label>
-                                <select 
-                                    value={role} 
-                                    onChange={(e) => setRole(e.target.value)}
-                                    style={{
-                                        width: '100%',
-                                        padding: '0.875rem 1rem',
-                                        border: '2px solid #e5e7eb',
-                                        borderRadius: '8px',
-                                        fontSize: '0.9rem',
-                                        transition: 'all 0.3s ease',
-                                        boxSizing: 'border-box',
-                                        outline: 'none',
-                                        cursor: 'pointer'
-                                    }}
-                                    onFocus={(e) => e.currentTarget.style.borderColor = '#10b981'}
-                                    onBlur={(e) => e.currentTarget.style.borderColor = '#e5e7eb'}
-                                >
-                                    <option value="reviewer">👁️ Reviewer</option>
-                                    <option value="researcher">🔬 Researcher</option>
-                                    <option value="admin">⚙️ Admin</option>
-                                </select>
-                            </div>
-                        )}
 
                         {error && (
                             <div style={{

@@ -82,6 +82,7 @@ class DetectionOut(DetectionBase):
     model_version: Optional[str] = None
     crop_path: Optional[str] = None
     review_status: Optional[str] = "unreviewed"
+    individual_id: Optional[str] = None
     created_at: Optional[datetime] = None
     model_config = {"from_attributes": True}
 
