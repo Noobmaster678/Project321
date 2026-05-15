@@ -91,7 +91,7 @@ function AppShell() {
                     <Route path="/individuals/species/:speciesKey/individuals" element={<SpeciesByIndividual />} />
                     <Route path="/individuals/species/:speciesKey/individuals/:individualId" element={<IndividualImages />} />
                     <Route path="/upload" element={<RequireAuth><BatchUpload /></RequireAuth>} />
-                    <Route path="/reports" element={<Reports />} />
+                    <Route path="/reports" element={<RequireAuth><Reports /></RequireAuth>} />
                     {PENDING_REVIEW_ENABLED && (
                         <Route path="/pending-review" element={<RequireAuth><PendingReviewPage /></RequireAuth>} />
                     )}
@@ -621,7 +621,7 @@ function Dashboard() {
             try {
                 const [s, r, cam, sp, det] = await Promise.all([
                     fetchStats(),
-                    fetchReport(),
+                    getToken() ? fetchReport() : Promise.resolve(null),
                     fetchCameraStats(),
                     fetchSpeciesCounts(),
                     fetchDetections({ per_page: 5 }),

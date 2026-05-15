@@ -62,14 +62,17 @@ async def register(
             detail="Open registration is disabled",
         )
 
-    if payload.role == "admin":
-        bootstrap_admin = total_users == 0
-        requester_is_admin = requester is not None and requester.role == "admin"
-        if not bootstrap_admin and not requester_is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only admins can create admin accounts",
-            )
+    requester_is_admin = requester is not None and requester.role == "admin"
+    if requester is None and payload.role != "reviewer":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Public registration only creates reviewer accounts",
+        )
+    if requester is not None and not requester_is_admin and payload.role != "reviewer":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can create elevated accounts",
+        )
 
     # Create new user with hashed password
     new_user = User(
