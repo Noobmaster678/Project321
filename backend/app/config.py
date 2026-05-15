@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # --- Redis / Celery (for later) ---
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # --- Auth ---
+    SECRET_KEY: str = "change-me-in-production"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
+    OPEN_REGISTRATION: bool = True
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

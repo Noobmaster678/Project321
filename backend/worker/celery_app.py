@@ -6,14 +6,15 @@ processing can run.
 """
 
 from typing import Any, Callable
+from backend.app.config import settings
 
 try:
     from celery import Celery  # type: ignore
 
     celery_app = Celery(
         "wildlife_worker",
-        broker="redis://localhost:6379/0",
-        backend="redis://localhost:6379/1",
+        broker=settings.REDIS_URL,
+        backend=settings.REDIS_URL,
     )
 
     celery_app.conf.update(

@@ -155,6 +155,23 @@ export interface IndividualGalleryResponse {
     source: string;
 }
 
+export interface ReidSuggestionItem {
+    rank: number;
+    individual_id: string;
+    similarity: number;
+    confidence: number;
+    accepted_by_gate: boolean;
+}
+
+export interface ReidSuggestionResponse {
+    detection_id: number;
+    suggestions: ReidSuggestionItem[];
+    gate_accepts_top1: boolean;
+    sim_threshold: number;
+    gap_threshold: number;
+    gap: number;
+}
+
 export interface SpeciesCount {
     species: string;
     count: number;
@@ -208,8 +225,40 @@ export interface ReportData {
     species_distribution: { species: string; count: number }[];
     camera_counts: { camera: string; detections: number }[];
     hourly_activity: { hour: number; detections: number }[];
+    monthly_activity: { month: string; detections: number }[];
+    identified_quolls_over_time: { month: string; new_identified: number; cumulative_identified: number }[];
+    recent_sightings: {
+        detection_id: number;
+        captured_at: string | null;
+        species: string | null;
+        confidence: number | null;
+        latitude: number | null;
+        longitude: number | null;
+    }[];
     rai_data: { species: string; independent_events: number; total_trap_nights: number; rai: number }[];
     total_trap_nights: number;
+}
+
+export interface ReportFilters {
+    species?: string;
+    date_from?: string;
+    date_to?: string;
+    camera_name?: string;
+    individual_id?: string;
+}
+
+export interface IndividualTimelineEvent {
+    detection_id: number;
+    captured_at: string | null;
+    camera_name: string | null;
+    latitude: number | null;
+    longitude: number | null;
+}
+
+export interface IndividualTimelineResponse {
+    individual_id: string;
+    events: IndividualTimelineEvent[];
+    monthly_counts: { month: string; sightings: number }[];
 }
 
 // ---- Auth -----------------------------------------------------------------
@@ -306,6 +355,12 @@ export async function fetchIndividualGallery(individualId: string): Promise<Indi
 export async function fetchReidInfo(): Promise<Record<string, unknown>> {
     const res = await fetch(`${API_BASE}/reid/info`);
     if (!res.ok) throw new Error('Failed to fetch re-ID info');
+    return res.json();
+}
+
+export async function fetchReidSuggestions(detectionId: number, topK = 5): Promise<ReidSuggestionResponse> {
+    const res = await fetch(`${API_BASE}/reid/detections/${detectionId}/suggestions?top_k=${topK}`);
+    if (!res.ok) throw new Error('Failed to fetch re-ID suggestions');
     return res.json();
 }
 
@@ -421,7 +476,7 @@ export async function fetchDetections(params: {
     page?: number; per_page?: number; species?: string; min_confidence?: number;
     max_confidence?: number; image_id?: number; camera_id?: number;
     collection_id?: number; date_from?: string; date_to?: string;
-    review_status?: string; category?: string;
+    review_status?: string; category?: string; individual_id?: string;
 }): Promise<PaginatedResponse<Detection>> {
     const sp = new URLSearchParams();
     if (params.page) sp.set('page', String(params.page));
@@ -436,6 +491,7 @@ export async function fetchDetections(params: {
     if (params.date_to) sp.set('date_to', params.date_to);
     if (params.review_status) sp.set('review_status', params.review_status);
     if (params.category) sp.set('category', params.category);
+    if (params.individual_id) sp.set('individual_id', params.individual_id);
     const res = await fetch(`${API_BASE}/detections/?${sp}`);
     if (!res.ok) throw new Error('Failed to fetch detections');
     return res.json();
@@ -485,17 +541,25 @@ export async function fetchAnnotations(detectionId: number): Promise<AnnotationD
 
 // ---- Reports --------------------------------------------------------------
 
-export async function fetchReport(species?: string): Promise<ReportData> {
+export async function fetchReport(filters: ReportFilters = {}): Promise<ReportData> {
     const sp = new URLSearchParams();
-    if (species) sp.set('species', species);
+    if (filters.species) sp.set('species', filters.species);
+    if (filters.date_from) sp.set('date_from', filters.date_from);
+    if (filters.date_to) sp.set('date_to', filters.date_to);
+    if (filters.camera_name) sp.set('camera_name', filters.camera_name);
+    if (filters.individual_id) sp.set('individual_id', filters.individual_id);
     const res = await fetch(`${API_BASE}/reports/summary?${sp}`);
     if (!res.ok) throw new Error('Failed to fetch report');
     return res.json();
 }
 
-export function getExportUrl(format: 'csv' | 'json', species?: string): string {
+export function getExportUrl(format: 'csv' | 'json', filters: ReportFilters = {}): string {
     const sp = new URLSearchParams({ format });
-    if (species) sp.set('species', species);
+    if (filters.species) sp.set('species', filters.species);
+    if (filters.date_from) sp.set('date_from', filters.date_from);
+    if (filters.date_to) sp.set('date_to', filters.date_to);
+    if (filters.camera_name) sp.set('camera_name', filters.camera_name);
+    if (filters.individual_id) sp.set('individual_id', filters.individual_id);
     return `${API_BASE}/reports/export?${sp}`;
 }
 
@@ -574,5 +638,11 @@ export async function createMissedDetection(
         body: JSON.stringify({ ...payload, flag_for_retraining: payload.flag_for_retraining ?? true }),
     });
     if (!res.ok) throw new Error('Failed to submit correction');
+    return res.json();
+}
+
+export async function fetchIndividualTimeline(individualId: string): Promise<IndividualTimelineResponse> {
+    const res = await fetch(`${API_BASE}/stats/individuals/${encodeURIComponent(individualId)}/timeline`);
+    if (!res.ok) throw new Error('Failed to fetch individual timeline');
     return res.json();
 }

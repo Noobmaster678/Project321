@@ -9,6 +9,7 @@ from backend.app.models.detection import Detection
 from backend.app.models.individual import Individual
 from backend.app.models.user import User
 from backend.app.schemas.schemas import AnnotationCreate, AnnotationUpdate, AnnotationOut
+from backend.app.services.reid_learning import resolve_reid_suggestions, incremental_update_from_detection
 from backend.app.utils.dependencies import get_current_user
 
 router = APIRouter(prefix="/annotations", tags=["Annotations"])
@@ -46,6 +47,18 @@ async def create_annotation(
     )
     db.add(ann)
     await db.flush()
+    if payload.individual_id:
+        await resolve_reid_suggestions(
+            db,
+            detection_id=payload.detection_id,
+            chosen_individual_id=payload.individual_id,
+            annotator=user.email,
+        )
+        await incremental_update_from_detection(
+            db,
+            detection_id=payload.detection_id,
+            individual_id=payload.individual_id,
+        )
     await db.refresh(ann)
     return AnnotationOut.model_validate(ann)
 
@@ -74,10 +87,38 @@ async def update_annotation(
     if not ann:
         raise HTTPException(status_code=404, detail="Annotation not found")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    before_individual = ann.individual_id
+    updates = payload.model_dump(exclude_unset=True)
+    after_individual = updates.get("individual_id", before_individual)
+    if after_individual:
+        ind = (
+            await db.execute(
+                select(Individual).where(Individual.individual_id == after_individual)
+            )
+        ).scalar_one_or_none()
+        if not ind:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Individual '{after_individual}' does not exist. Create the profile first.",
+            )
+
+    for field, value in updates.items():
         setattr(ann, field, value)
     ann.annotator = user.email
 
     await db.flush()
+    if "individual_id" in updates:
+        await resolve_reid_suggestions(
+            db,
+            detection_id=ann.detection_id,
+            chosen_individual_id=ann.individual_id,
+            annotator=user.email,
+        )
+        if ann.individual_id and ann.individual_id != before_individual:
+            await incremental_update_from_detection(
+                db,
+                detection_id=ann.detection_id,
+                individual_id=ann.individual_id,
+            )
     await db.refresh(ann)
     return AnnotationOut.model_validate(ann)

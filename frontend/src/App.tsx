@@ -8,12 +8,13 @@ import {
     fetchStats, fetchImages, fetchIndividuals, fetchCollectionStats, fetchCameraStats,
     fetchSpeciesCounts, fetchReport, fetchDetectionDetail, fetchAnnotations, fetchDetections,
     createAnnotation, uploadBatch, fetchJobStatus, fetchUsers, changeUserRole,
-    fetchSystemMetrics, register, getExportUrl, getQuollExportUrl, getMetadataExportUrl, fetchImagesBySpecies, fetchImageDetail,
-    storageUrl, createMissedDetection, fetchReviewQueue, fetchIndividualGallery, fetchReidInfo, createIndividual,
+    fetchSystemMetrics, register, getExportUrl, getQuollExportUrl, getMetadataExportUrl, fetchImagesBySpecies, fetchImageDetail, getToken,
+    storageUrl, createMissedDetection, fetchReviewQueue, fetchIndividualGallery, fetchReidInfo, fetchReidSuggestions, createIndividual,
+    fetchIndividualTimeline,
     type DashboardStats, type ImageData, type IndividualData, type CollectionStat,
     type CameraStat, type SpeciesCount, type PaginatedResponse, type ReportData,
     type DetectionDetail, type AnnotationData, type JobStatus, type UserData, type Detection,
-    type ReviewQueueCounts, type IndividualGalleryItem,
+    type ReviewQueueCounts, type IndividualGalleryItem, type ReidSuggestionResponse, type ReportFilters,
 } from './api';
 import './index.css';
 import AdminPage from './AdminPage';
@@ -29,6 +30,7 @@ L.Icon.Default.mergeOptions({
 const CHART_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
 
 const WT_GREEN = '#2e7d32';
+const PENDING_REVIEW_ENABLED = import.meta.env.VITE_ENABLE_PENDING_REVIEW === 'true';
 
 const SPOTTED_QUOLL_OVERVIEW =
     'The spotted-tailed quoll (Dasyurus maculatus) is mainland Australia’s largest native marsupial carnivore. ' +
@@ -53,6 +55,13 @@ function displayImageName(img: { filename: string; file_path: string }): string 
     if (parts.length >= 3) return parts.slice(-2).join(' / ');
     if (parts.length === 2) return parts.join(' / ');
     return img.filename;
+}
+
+function inferCameraFolder(img: { file_path: string }): string {
+    if (!img.file_path) return 'Unknown';
+    const parts = img.file_path.replace(/\\/g, '/').split('/').filter(Boolean);
+    if (parts.length >= 2) return parts[parts.length - 2];
+    return 'Unknown';
 }
 
 function App() {
@@ -83,11 +92,19 @@ function AppShell() {
                     <Route path="/individuals/species/:speciesKey/individuals/:individualId" element={<IndividualImages />} />
                     <Route path="/upload" element={<RequireAuth><BatchUpload /></RequireAuth>} />
                     <Route path="/reports" element={<Reports />} />
-                    <Route path="/pending-review" element={<RequireAuth><PendingReviewPage /></RequireAuth>} />
+                    {PENDING_REVIEW_ENABLED && (
+                        <Route path="/pending-review" element={<RequireAuth><PendingReviewPage /></RequireAuth>} />
+                    )}
                     <Route path="/help" element={<HelpPage />} />
-                    <Route path="/review/:detectionId" element={<RequireAuth><ImageReview /></RequireAuth>} />
-                    <Route path="/review-empty/:imageId" element={<RequireAuth><ReviewEmptyImage /></RequireAuth>} />
-                    <Route path="/review-image/:imageId" element={<RequireAuth><ReviewImage /></RequireAuth>} />
+                    {PENDING_REVIEW_ENABLED && (
+                        <Route path="/review/:detectionId" element={<RequireAuth><ImageReview /></RequireAuth>} />
+                    )}
+                    {PENDING_REVIEW_ENABLED && (
+                        <Route path="/review-empty/:imageId" element={<RequireAuth><ReviewEmptyImage /></RequireAuth>} />
+                    )}
+                    {PENDING_REVIEW_ENABLED && (
+                        <Route path="/review-image/:imageId" element={<RequireAuth><ReviewImage /></RequireAuth>} />
+                    )}
                     <Route path="/admin" element={<RequireAuth role="admin"><AdminPanel /></RequireAuth>} />
                     <Route path="/login" element={<LoginPage />} />
                     <Route path="*" element={<Navigate to="/" />} />
@@ -114,8 +131,10 @@ function HomeHeader() {
     const navItems = [
         { path: '/', label: 'Home' },
         { path: '/upload', label: 'Upload' },
+        { path: '/images', label: 'Images' },
+        { path: '/detections', label: 'Detections' },
         { path: '/individuals', label: 'Profiles' },
-        { path: '/pending-review', label: 'Pending Review' },
+        ...(PENDING_REVIEW_ENABLED ? [{ path: '/pending-review', label: 'Pending Review' } as const] : []),
         { path: '/reports', label: 'Reports' },
         { path: '/help', label: 'Help' },
         ...(user?.role === 'admin' ? [{ path: '/admin', label: 'Admin' } as const] : []),
@@ -132,7 +151,7 @@ function HomeHeader() {
                     <Link
                         key={item.path}
                         to={item.path}
-                        className={`nav-link ${loc.pathname === item.path || (item.path === '/pending-review' && loc.pathname.startsWith('/review')) || (item.path === '/admin' && loc.pathname.startsWith('/admin')) ? 'active' : ''}`}
+                        className={`nav-link ${loc.pathname === item.path || (PENDING_REVIEW_ENABLED && item.path === '/pending-review' && loc.pathname.startsWith('/review')) || (item.path === '/admin' && loc.pathname.startsWith('/admin')) ? 'active' : ''}`}
                     >
                         {item.label}
                     </Link>
@@ -140,7 +159,7 @@ function HomeHeader() {
             </nav>
             <div className="nav-icons">
                 <button type="button" className="nav-icon-btn" aria-label="Notifications">🔔</button>
-                <button type="button" className="nav-icon-btn" aria-label="Help">❓</button>
+                <Link to="/help" className="nav-icon-btn" aria-label="Help">❓</Link>
                 {user ? (
                     <button
                         type="button"
@@ -259,7 +278,6 @@ function PendingReviewPage() {
                 setFilterImages(res);
             } else if (cat === 'assign-individual') {
                 const res = await fetchDetections({ species: 'quoll', review_status: 'verified', per_page: 50, page, camera_id: cameraFilter });
-                // THE FIX: Filter out photos that ALREADY have an ID assigned!
                 setFilterDetections(res.items.filter((d: any) => !d.individual_id));
             }
         } catch { }
@@ -429,7 +447,7 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
         setLastAction(null);
         fetchDetectionDetail(det.id).then((d) => {
             setDetail(d);
-            if (d.individual_id) setIndividualId(d.individual_id); // Ensure details load it too
+            if ((d as any).individual_id) setIndividualId((d as any).individual_id); // Ensure details load it too
         }).catch(() => {});
     }, [det?.id]);
 
@@ -463,7 +481,7 @@ function ReviewDetectionInline({ detections, currentIdx, onNavigate, onReviewed,
             await createAnnotation({
                 detection_id: det.id,
                 is_correct: true,
-                corrected_species: det.species, // Prevent the backend from accidentally reverting the species
+                corrected_species: det.species ?? undefined, // Prevent the backend from accidentally reverting the species
                 individual_id: individualId,
                 flag_for_retraining: false,
                 notes: notes || undefined,
@@ -653,19 +671,16 @@ function Dashboard() {
         count: g.hours.reduce((sum, h) => sum + (hourlyMap.get(h) || 0), 0),
     }));
 
-    // Observation trends: 6 months (use report total or mock)
-    const totalDet = report?.total_detections ?? stats.total_detections;
-    const observationTrends = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'].map((name, i) => ({
-        name,
-        count: Math.round(totalDet * (0.6 + (i * 0.1)) + Math.random() * 20),
+    const observationTrends = (report?.monthly_activity ?? []).map((m) => ({
+        name: m.month,
+        count: m.detections,
     }));
 
-    // Species abundance: Species, Individuals, Density, Trend (design uses Koala/Quoll/Kangaroo; we use API species + mock density/trend)
-    const speciesAbundance = species.slice(0, 8).map((s, i) => ({
+    const totalSpeciesDetections = species.reduce((sum, s) => sum + s.count, 0);
+    const speciesAbundance = species.slice(0, 8).map((s) => ({
         species: s.species,
-        individuals: s.count,
-        density: (s.count / (i + 2)).toFixed(1),
-        trend: (i % 3 === 0 ? -5 : i % 3 === 1 ? 15 : 8),
+        detections: s.count,
+        share: totalSpeciesDetections > 0 ? ((s.count / totalSpeciesDetections) * 100).toFixed(1) : '0.0',
     }));
 
     return (
@@ -699,21 +714,30 @@ function Dashboard() {
                         <div className="stat-label">Pending Review</div>
                     </div>
                 </div>
+                <div className="home-stat-card">
+                    <div className="stat-icon-wrap blue">📈</div>
+                    <div>
+                        <div className="stat-value">{report?.total_trap_nights?.toFixed(1) ?? '0.0'}</div>
+                        <div className="stat-label">Trap Nights</div>
+                    </div>
+                </div>
             </div>
 
             <div className="home-map-section">
                 <div className="section-header">
                     <h3>CameraTrap Locations</h3>
                     <div className="view-toggle">
-                        <button type="button" className={mapView === 'cluster' ? 'active' : ''} onClick={() => setMapView('cluster')}>Cluster View</button>
+                        <button type="button" className={mapView === 'cluster' ? 'active' : ''} onClick={() => setMapView('cluster')}>Most Active First</button>
                         <span style={{ color: 'var(--border)' }}>|</span>
-                        <button type="button" className={mapView === 'region' ? 'active' : ''} onClick={() => setMapView('region')}>Region View ▾</button>
+                        <button type="button" className={mapView === 'region' ? 'active' : ''} onClick={() => setMapView('region')}>Geographic View</button>
                     </div>
                 </div>
                 <div className="map-wrap">
                     <MapContainer center={mapCenter} zoom={camsWithCoords.length ? 12 : 10} style={{ height: '100%', width: '100%' }}>
                         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="OSM" />
-                        {camsWithCoords.map((c) => (
+                        {[...camsWithCoords]
+                            .sort((a, b) => mapView === 'cluster' ? b.detection_count - a.detection_count : a.name.localeCompare(b.name))
+                            .map((c) => (
                             <Marker key={c.id} position={[c.latitude!, c.longitude!]}>
                                 <Popup>
                                     <strong>{c.name}</strong><br />
@@ -760,20 +784,17 @@ function Dashboard() {
                 <div className="table-container">
                     <table>
                         <thead>
-                            <tr><th>Species</th><th>Individuals</th><th>Density (/km²)</th><th>Trend</th></tr>
+                            <tr><th>Species</th><th>Detections</th><th>Share of observations</th></tr>
                         </thead>
                         <tbody>
                             {speciesAbundance.length === 0 ? (
-                                <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>No species data yet</td></tr>
+                                <tr><td colSpan={3} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>No species data yet</td></tr>
                             ) : (
                                 speciesAbundance.map((row) => (
                                     <tr key={row.species}>
                                         <td>{row.species}</td>
-                                        <td>{row.individuals}</td>
-                                        <td>{row.density}</td>
-                                        <td className={row.trend >= 0 ? 'trend-up' : 'trend-down'}>
-                                            {row.trend >= 0 ? '+' : ''}{row.trend}%
-                                        </td>
+                                        <td>{row.detections}</td>
+                                        <td>{row.share}%</td>
                                     </tr>
                                 ))
                             )}
@@ -789,7 +810,7 @@ function Dashboard() {
                         <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>No recent activity</div>
                     ) : (
                         recentDetections.map((d) => (
-                            <Link key={d.id} to={`/review/${d.id}`} className="recent-activity-item">
+                            <Link key={d.id} to={PENDING_REVIEW_ENABLED ? `/review/${d.id}` : `/detections`} className="recent-activity-item">
                                 <div className="thumb">
                                     {d.crop_path ? <img src={storageUrl(d.crop_path)} alt="" /> : '📷'}
                                 </div>
@@ -814,41 +835,85 @@ function Dashboard() {
    ============================================================ */
 function ImageBrowser() {
     const [images, setImages] = useState<PaginatedResponse<ImageData> | null>(null);
+    const [cameras, setCameras] = useState<CameraStat[]>([]);
     const [page, setPage] = useState(1);
     const [filterProcessed, setFilterProcessed] = useState('all');
     const [filterAnimal, setFilterAnimal] = useState('all');
     const [filterSpecies, setFilterSpecies] = useState('all');
+    const [cameraIdFilter, setCameraIdFilter] = useState<number | null>(null);
+    const [searchText, setSearchText] = useState('');
+    const [folderFilter, setFolderFilter] = useState('all');
+    const [groupByCameraFolder, setGroupByCameraFolder] = useState(true);
+    const [sortMode, setSortMode] = useState<'captured_desc' | 'captured_asc' | 'name_asc'>('captured_desc');
     const [selectedImage, setSelectedImage] = useState<ImageData | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    const sortedItems = images
-        ? [...images.items].sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true, sensitivity: 'base' }))
+    useEffect(() => {
+        fetchCameraStats().then(setCameras).catch(() => setCameras([]));
+    }, []);
+
+    const cameraNameById = new Map(cameras.map((c) => [c.id, c.name]));
+    const folderOptions = images
+        ? Array.from(new Set(images.items.map((img) => inferCameraFolder(img)))).sort((a, b) => a.localeCompare(b))
         : [];
+
+    const sortedItems = images
+        ? [...images.items].sort((a, b) => {
+            if (sortMode === 'name_asc') {
+                return a.filename.localeCompare(b.filename, undefined, { numeric: true, sensitivity: 'base' });
+            }
+            const aTime = a.captured_at ? new Date(a.captured_at).getTime() : 0;
+            const bTime = b.captured_at ? new Date(b.captured_at).getTime() : 0;
+            return sortMode === 'captured_asc' ? aTime - bTime : bTime - aTime;
+        })
+        : [];
+    const searchedItems = sortedItems.filter((img) => {
+        const q = searchText.trim().toLowerCase();
+        if (!q) return true;
+        return (
+            img.filename.toLowerCase().includes(q)
+            || (img.file_path || '').toLowerCase().includes(q)
+            || String(img.id).includes(q)
+        );
+    });
+    const filteredItems = searchedItems.filter((img) => {
+        if (folderFilter === 'all') return true;
+        return inferCameraFolder(img) === folderFilter;
+    });
+    const groupedItems = filteredItems.reduce<Record<string, ImageData[]>>((acc, img) => {
+        const folder = inferCameraFolder(img);
+        const camName = img.camera_id ? (cameraNameById.get(img.camera_id) || `Camera ${img.camera_id}`) : null;
+        const label = camName ? `${camName} (${folder})` : folder;
+        if (!acc[label]) acc[label] = [];
+        acc[label].push(img);
+        return acc;
+    }, {});
 
     useEffect(() => {
         setLoading(true);
         setError(null);
-        const params: any = { page, per_page: 48 };
+        const params: any = { page, per_page: 96 };
         if (filterProcessed !== 'all') params.processed = filterProcessed === 'yes';
         if (filterAnimal !== 'all') params.has_animal = filterAnimal === 'yes';
+        if (cameraIdFilter !== null) params.camera_id = cameraIdFilter;
         const request = filterSpecies === 'quoll' ? fetchImagesBySpecies('quoll', params) : fetchImages(params);
         request.then(setImages).catch((e) => setError(e.message)).finally(() => setLoading(false));
-    }, [page, filterProcessed, filterAnimal, filterSpecies]);
+    }, [page, filterProcessed, filterAnimal, filterSpecies, cameraIdFilter]);
 
     const selectedIndex = selectedImage
-        ? sortedItems.findIndex((img) => img.id === selectedImage.id)
+        ? filteredItems.findIndex((img) => img.id === selectedImage.id)
         : -1;
 
     const showPrevImage = useCallback(() => {
         if (selectedIndex <= 0) return;
-        setSelectedImage(sortedItems[selectedIndex - 1]);
-    }, [selectedIndex, sortedItems]);
+        setSelectedImage(filteredItems[selectedIndex - 1]);
+    }, [selectedIndex, filteredItems]);
 
     const showNextImage = useCallback(() => {
-        if (selectedIndex < 0 || selectedIndex >= sortedItems.length - 1) return;
-        setSelectedImage(sortedItems[selectedIndex + 1]);
-    }, [selectedIndex, sortedItems]);
+        if (selectedIndex < 0 || selectedIndex >= filteredItems.length - 1) return;
+        setSelectedImage(filteredItems[selectedIndex + 1]);
+    }, [selectedIndex, filteredItems]);
 
     useEffect(() => {
         if (!selectedImage) return;
@@ -874,29 +939,98 @@ function ImageBrowser() {
                 <select className="filter-select" value={filterSpecies} onChange={(e) => { setFilterSpecies(e.target.value); setPage(1); }}>
                     <option value="all">All Species</option><option value="quoll">Quoll Only</option>
                 </select>
-                {images && <span className="tag tag-muted">{fmt(images.total)} images</span>}
+                <select className="filter-select" value={cameraIdFilter ?? ''} onChange={(e) => { setCameraIdFilter(e.target.value ? Number(e.target.value) : null); setPage(1); }}>
+                    <option value="">All Cameras</option>
+                    {cameras.map((cam) => (
+                        <option key={cam.id} value={cam.id}>{cam.name}</option>
+                    ))}
+                </select>
+                <select className="filter-select" value={folderFilter} onChange={(e) => { setFolderFilter(e.target.value); }}>
+                    <option value="all">All Camera Folders</option>
+                    {folderOptions.map((folder) => (
+                        <option key={folder} value={folder}>{folder}</option>
+                    ))}
+                </select>
+                <input
+                    className="filter-select"
+                    style={{ minWidth: 220 }}
+                    placeholder="Search file/path/image id..."
+                    value={searchText}
+                    onChange={(e) => setSearchText(e.target.value)}
+                />
+                <select className="filter-select" value={sortMode} onChange={(e) => setSortMode(e.target.value as any)}>
+                    <option value="captured_desc">Newest first</option>
+                    <option value="captured_asc">Oldest first</option>
+                    <option value="name_asc">Filename A-Z</option>
+                </select>
+                <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => { setSearchText(''); setFolderFilter('all'); setCameraIdFilter(null); setPage(1); }}
+                >
+                    Clear
+                </button>
+                <label className="tag tag-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                        type="checkbox"
+                        checked={groupByCameraFolder}
+                        onChange={(e) => setGroupByCameraFolder(e.target.checked)}
+                    />
+                    Group by camera folder
+                </label>
+                {images && <span className="tag tag-muted">{fmt(filteredItems.length)} shown · {fmt(images.total)} total</span>}
             </div>
             {loading ? <LoadingState /> : error ? <ErrorState message={error} /> : !images || images.items.length === 0 ? (
                 <div className="empty-state"><div className="icon">📷</div><h3>No images found</h3></div>
             ) : (
                 <>
-                    <div className="image-grid">
-                        {sortedItems.map((img) => (
-                            <div key={img.id} className="image-card" onClick={() => setSelectedImage(img)} style={{ cursor: 'pointer' }}>
-                                <div className="image-thumb">
-                                    {(img.thumbnail_path || img.file_path) ? <img src={storageUrl(img.thumbnail_path || img.file_path)} alt={img.filename} /> : '📷'}
-                                    {img.has_animal && <div style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(16,185,129,0.9)', borderRadius: '6px', padding: '2px 6px', fontSize: '0.65rem', fontWeight: 700, color: 'white' }}>ANIMAL</div>}
+                    {filteredItems.length === 0 ? (
+                        <div className="empty-state"><div className="icon">🔎</div><h3>No images match your filters</h3></div>
+                    ) : groupByCameraFolder ? (
+                        Object.entries(groupedItems).sort(([a], [b]) => a.localeCompare(b)).map(([groupName, groupImages]) => (
+                            <div key={groupName} style={{ marginBottom: '1.5rem' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                                    <h3 style={{ margin: 0, fontSize: '1rem' }}>{groupName}</h3>
+                                    <span className="tag tag-muted">{groupImages.length} image(s)</span>
                                 </div>
-                                <div className="image-info">
-                                    <div className="image-filename">{displayImageName(img)}</div>
-                                    <div className="image-meta">
-                                        {img.processed ? <span className="tag tag-primary">Processed</span> : <span className="tag tag-muted">Pending</span>}
-                                        {img.camera_id && <span className="tag tag-info">Cam {img.camera_id}</span>}
-                                    </div>
+                                <div className="image-grid">
+                                    {groupImages.map((img) => (
+                                        <div key={img.id} className="image-card" onClick={() => setSelectedImage(img)} style={{ cursor: 'pointer' }}>
+                                            <div className="image-thumb">
+                                                {(img.thumbnail_path || img.file_path) ? <img src={storageUrl(img.thumbnail_path || img.file_path)} alt={img.filename} /> : '📷'}
+                                                {img.has_animal && <div style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(16,185,129,0.9)', borderRadius: '6px', padding: '2px 6px', fontSize: '0.65rem', fontWeight: 700, color: 'white' }}>ANIMAL</div>}
+                                            </div>
+                                            <div className="image-info">
+                                                <div className="image-filename">{displayImageName(img)}</div>
+                                                <div className="image-meta">
+                                                    {img.processed ? <span className="tag tag-primary">Processed</span> : <span className="tag tag-muted">Pending</span>}
+                                                    {img.camera_id && <span className="tag tag-info">Cam {img.camera_id}</span>}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
-                        ))}
-                    </div>
+                        ))
+                    ) : (
+                        <div className="image-grid">
+                            {filteredItems.map((img) => (
+                                <div key={img.id} className="image-card" onClick={() => setSelectedImage(img)} style={{ cursor: 'pointer' }}>
+                                    <div className="image-thumb">
+                                        {(img.thumbnail_path || img.file_path) ? <img src={storageUrl(img.thumbnail_path || img.file_path)} alt={img.filename} /> : '📷'}
+                                        {img.has_animal && <div style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(16,185,129,0.9)', borderRadius: '6px', padding: '2px 6px', fontSize: '0.65rem', fontWeight: 700, color: 'white' }}>ANIMAL</div>}
+                                    </div>
+                                    <div className="image-info">
+                                        <div className="image-filename">{displayImageName(img)}</div>
+                                        <div className="image-meta">
+                                            {img.processed ? <span className="tag tag-primary">Processed</span> : <span className="tag tag-muted">Pending</span>}
+                                            {img.camera_id && <span className="tag tag-info">Cam {img.camera_id}</span>}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                     {images.pages > 1 && (
                         <div className="pagination">
                             <button className="page-btn" onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1}>Prev</button>
@@ -913,7 +1047,7 @@ function ImageBrowser() {
                             <h3>{selectedImage.filename}</h3>
                             <div style={{ display: 'flex', gap: '0.5rem' }}>
                                 <button className="btn btn-outline" onClick={showPrevImage} disabled={selectedIndex <= 0}>← Prev</button>
-                                <button className="btn btn-outline" onClick={showNextImage} disabled={selectedIndex >= sortedItems.length - 1}>Next →</button>
+                                <button className="btn btn-outline" onClick={showNextImage} disabled={selectedIndex >= filteredItems.length - 1}>Next →</button>
                                 <button className="btn btn-outline" onClick={() => setSelectedImage(null)}>Close</button>
                             </div>
                         </div>
@@ -1063,6 +1197,7 @@ function BatchUpload() {
     const [collectionName, setCollectionName] = useState('');
     const [cameraCoordinates, setCameraCoordinates] = useState<Record<string, CameraCoordinateInput>>({});
     const folderRef = useRef<HTMLInputElement>(null);
+    const filesRef = useRef<HTMLInputElement>(null);
 
     const folderInfo = selectedFiles.length > 0 ? parseFolderStructure(selectedFiles) : null;
 
@@ -1152,15 +1287,23 @@ function BatchUpload() {
 
     return (
         <>
-            <div className="page-header"><h2>Upload Images</h2><p>Select a collection folder containing camera trap subfolders.</p></div>
+            <div className="page-header"><h2>Upload Images</h2><p>Select images directly, or choose a collection folder containing camera trap subfolders.</p></div>
 
             <div
                 className={`dropzone ${dragOver ? 'dragover' : ''}`}
                 onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handleDrop}
-                onClick={() => folderRef.current?.click()}
+                onClick={() => filesRef.current?.click()}
             >
+                <input
+                    ref={filesRef}
+                    type="file"
+                    multiple
+                    accept=".jpg,.jpeg,.png"
+                    style={{ display: 'none' }}
+                    onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }}
+                />
                 <input
                     ref={folderRef}
                     type="file"
@@ -1175,10 +1318,11 @@ function BatchUpload() {
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
                     </svg>
                 </div>
-                <p className="dropzone-text">Drop folder here or click to browse</p>
-                <p className="dropzone-hint">Select the collection folder (e.g. MortonNP_June2025/) containing camera subfolders</p>
+                <p className="dropzone-text">Drop images/folder here or click to choose images</p>
+                <p className="dropzone-hint">Choose individual images, or choose a folder (e.g. MortonNP_June2025/) containing camera subfolders</p>
                 <div className="dropzone-buttons">
-                    <button type="button" className="btn btn-primary" onClick={(e) => { e.stopPropagation(); folderRef.current?.click(); }}>Choose Folder</button>
+                    <button type="button" className="btn btn-primary" onClick={(e) => { e.stopPropagation(); filesRef.current?.click(); }}>Choose Images</button>
+                    <button type="button" className="btn btn-outline" onClick={(e) => { e.stopPropagation(); folderRef.current?.click(); }}>Choose Folder</button>
                 </div>
             </div>
 
@@ -1263,6 +1407,11 @@ function BatchUpload() {
                         <div className="progress-label"><span>{job.processed_images} / {job.total_images} processed</span><span>{job.percent.toFixed(1)}%</span></div>
                         {job.failed_images > 0 && <p style={{ color: 'var(--danger)', marginTop: '0.5rem', fontSize: '0.85rem' }}>{job.failed_images} failed</p>}
                         {job.status === 'failed' && job.error_message && <p style={{ color: 'var(--danger)', marginTop: '0.5rem', fontSize: '0.85rem' }}>{job.error_message}</p>}
+                        {job.status === 'completed_with_errors' && (
+                            <p style={{ color: 'var(--warning)', marginTop: '0.5rem', fontSize: '0.85rem' }}>
+                                Completed with errors. {job.error_message || 'Some images failed processing.'}
+                            </p>
+                        )}
                         {job.status === 'completed' && <p style={{ color: 'var(--success)', marginTop: '0.5rem', fontSize: '0.85rem' }}>All images processed successfully.</p>}
                     </div>
                 </div>
@@ -1283,7 +1432,7 @@ function Reports() {
     const [endDate, setEndDate] = useState('');
     const [location, setLocation] = useState('All Locations');
     const [individual, setIndividual] = useState('');
-    const [exportFormat, setExportFormat] = useState<'pdf' | 'csv'>('pdf');
+    const [exportFormat, setExportFormat] = useState<'json' | 'csv'>('csv');
     
     const [incTimestamps, setIncTimestamps] = useState(true);
     const [incGPS, setIncGPS] = useState(true);
@@ -1291,9 +1440,29 @@ function Reports() {
     const [incEnv, setIncEnv] = useState(false);
     const [incCamera, setIncCamera] = useState(false);
 
-    useEffect(() => { 
-        fetchReport().then(setReport).catch((e) => setError(e.message)).finally(() => setLoading(false)); 
-    }, []);
+    const buildFilters = useCallback((): ReportFilters => ({
+        date_from: startDate || undefined,
+        date_to: endDate || undefined,
+        camera_name: location !== 'All Locations' ? location : undefined,
+        individual_id: individual.trim() || undefined,
+    }), [startDate, endDate, location, individual]);
+
+    const refreshReport = useCallback(async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            const data = await fetchReport(buildFilters());
+            setReport(data);
+        } catch (e: any) {
+            setError(e.message);
+        } finally {
+            setLoading(false);
+        }
+    }, [buildFilters]);
+
+    useEffect(() => {
+        refreshReport();
+    }, [refreshReport]);
 
     if (loading) return <LoadingState />;
     if (error) return <ErrorState message={error} />;
@@ -1301,7 +1470,10 @@ function Reports() {
 
     const downloadFile = async (url: string, filename: string) => {
         try {
-            const res = await fetch(url);
+            const token = getToken();
+            const res = await fetch(url, {
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            });
             if (!res.ok) throw new Error(`Download failed (${res.status})`);
             const blob = await res.blob();
             const objectUrl = URL.createObjectURL(blob);
@@ -1318,13 +1490,14 @@ function Reports() {
     };
 
     const handleExport = () => {
+        const filters = buildFilters();
         if (exportFormat === 'csv') {
-            downloadFile(getExportUrl('csv'), 'custom_wildlife_report.csv');
+            downloadFile(getExportUrl('csv', filters), 'custom_wildlife_report.csv');
         } else {
-            alert("PDF generation is currently being implemented on the server. Downloading raw JSON data instead.");
-            downloadFile(getExportUrl('json'), 'wildlife_report_data.json');
+            downloadFile(getExportUrl('json', filters), 'wildlife_report_data.json');
         }
     };
+    const previewColumns = 2 + (incTimestamps ? 1 : 0) + (incConfidence ? 1 : 0) + (incGPS ? 1 : 0);
 
     return (
         <div className="reports-page-wrapper">
@@ -1361,7 +1534,7 @@ function Reports() {
                                     <label className="form-label">Location</label>
                                     <select value={location} onChange={(e) => setLocation(e.target.value)} className="form-input">
                                         <option>All Locations</option>
-                                        {report.camera_counts.map(c => (
+                                        {report.camera_counts.map((c) => (
                                             <option key={c.camera} value={c.camera}>{c.camera}</option>
                                         ))}
                                     </select>
@@ -1377,16 +1550,19 @@ function Reports() {
                             <div>
                                 <label className="form-label">Report Format</label>
                                 <div className="format-group">
-                                    <label className={`format-card ${exportFormat === 'pdf' ? 'active' : ''}`} onClick={() => setExportFormat('pdf')}>
-                                        <img src="https://api.iconify.design/bi:file-earmark-pdf-fill.svg" alt="pdf" />
-                                        <span>PDF Report</span>
-                                    </label>
                                     <label className={`format-card ${exportFormat === 'csv' ? 'active' : ''}`} onClick={() => setExportFormat('csv')}>
                                         <img src="https://api.iconify.design/bi:file-earmark-spreadsheet-fill.svg" alt="csv" />
                                         <span>CSV Data</span>
                                     </label>
+                                    <label className={`format-card ${exportFormat === 'json' ? 'active' : ''}`} onClick={() => setExportFormat('json')}>
+                                        <img src="https://api.iconify.design/bi:filetype-json.svg" alt="json" />
+                                        <span>JSON Data</span>
+                                    </label>
                                 </div>
                             </div>
+                            <button type="button" className="btn btn-outline" onClick={refreshReport}>
+                                Apply Filters
+                            </button>
                         </div>
                     </div>
                     
@@ -1421,7 +1597,7 @@ function Reports() {
                 <section className="preview-section">
                     <div className="preview-header">
                         <span className="preview-header-title">Report Preview</span>
-                        <span className="preview-header-meta">Showing Sample Sightings</span>
+                        <span className="preview-header-meta">Showing filtered sightings ({report.recent_sightings.length})</span>
                     </div>
 
                     <div className="table-wrapper">
@@ -1436,20 +1612,26 @@ function Reports() {
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr>
-                                    <td className="text-strong">S-001</td>
-                                    {incTimestamps && <td style={{ color: '#4b5563' }}>2025-09-13 23:12:04</td>}
-                                    <td className="text-italic">Spotted-tail Quoll</td>
-                                    {incConfidence && <td><span className="conf-high">96%</span></td>}
-                                    {incGPS && <td className="text-mono">-35.123, 150.456</td>}
-                                </tr>
-                                <tr>
-                                    <td className="text-strong">S-005</td>
-                                    {incTimestamps && <td style={{ color: '#4b5563' }}>2025-09-13 15:22:56</td>}
-                                    <td className="text-italic">Spotted-tail Quoll</td>
-                                    {incConfidence && <td><span className="conf-low">46%</span></td>}
-                                    {incGPS && <td className="text-mono">-35.120, 150.450</td>}
-                                </tr>
+                                {report.recent_sightings.slice(0, 8).map((row) => (
+                                    <tr key={row.detection_id}>
+                                        <td className="text-strong">D-{row.detection_id}</td>
+                                        {incTimestamps && <td style={{ color: '#4b5563' }}>{row.captured_at ? new Date(row.captured_at).toLocaleString() : '—'}</td>}
+                                        <td className="text-italic">{row.species || 'Unknown'}</td>
+                                        {incConfidence && <td>{row.confidence == null ? '—' : <span className={row.confidence >= 0.7 ? 'conf-high' : 'conf-low'}>{Math.round(row.confidence * 100)}%</span>}</td>}
+                                        {incGPS && (
+                                            <td className="text-mono">
+                                                {row.latitude == null || row.longitude == null ? '—' : `${row.latitude.toFixed(4)}, ${row.longitude.toFixed(4)}`}
+                                            </td>
+                                        )}
+                                    </tr>
+                                ))}
+                                {report.recent_sightings.length === 0 && (
+                                    <tr>
+                                        <td colSpan={previewColumns} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
+                                            No sightings match the selected filters.
+                                        </td>
+                                    </tr>
+                                )}
                             </tbody>
                         </table>
                     </div>
@@ -1486,6 +1668,36 @@ function Reports() {
                                         </ResponsiveContainer>
                                     </div>
                                     <p className="viz-caption">Fig 2. Quoll Activity Pattern (24h)</p>
+                                </div>
+                            )}
+                            {report.rai_data.length > 0 && (
+                                <div className="viz-card">
+                                    <div style={{ height: 300 }}>
+                                        <ResponsiveContainer>
+                                            <BarChart data={report.rai_data}>
+                                                <XAxis dataKey="species" tick={{ fill: '#9ca3af', fontSize: 11 }} />
+                                                <YAxis tick={{ fill: '#9ca3af', fontSize: 12 }} />
+                                                <Tooltip />
+                                                <Bar dataKey="rai" fill="#2563eb" radius={[4, 4, 0, 0]} />
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                    <p className="viz-caption">Fig 3. Relative Abundance Index (events per 100 trap-nights)</p>
+                                </div>
+                            )}
+                            {report.identified_quolls_over_time.length > 0 && (
+                                <div className="viz-card">
+                                    <div style={{ height: 300 }}>
+                                        <ResponsiveContainer>
+                                            <LineChart data={report.identified_quolls_over_time}>
+                                                <XAxis dataKey="month" tick={{ fill: '#9ca3af', fontSize: 11 }} />
+                                                <YAxis tick={{ fill: '#9ca3af', fontSize: 12 }} />
+                                                <Tooltip />
+                                                <Line type="monotone" dataKey="cumulative_identified" stroke="#16a34a" strokeWidth={2} dot={{ r: 3 }} />
+                                            </LineChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                    <p className="viz-caption">Fig 4. Cumulative identified quolls over time</p>
                                 </div>
                             )}
                         </div>
@@ -1750,8 +1962,6 @@ function ReviewImage() {
             bbox_h: bbox.h, 
             species, 
             flag_for_retraining: true,
-            individual_id: individualId || undefined, // <-- ADD THIS
-            notes: notes || undefined                 // <-- ADD THIS
         });
         setStep('done');
     } catch { }
@@ -1767,7 +1977,9 @@ function ReviewImage() {
             <h2>Review saved</h2>
             <p>Thank you — this feedback will help improve the model.</p>
             <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', marginTop: '1rem' }}>
-                <Link to="/pending-review" className="btn btn-primary">Back to Pending Review</Link>
+                {PENDING_REVIEW_ENABLED && (
+                    <Link to="/pending-review" className="btn btn-primary">Back to Pending Review</Link>
+                )}
                 <button type="button" className="btn btn-outline" onClick={() => window.history.back()}>Go Back</button>
             </div>
         </div>
@@ -1990,6 +2202,9 @@ function SpeciesImages() {
     const [compareId, setCompareId] = useState('');
     const [compareGallery, setCompareGallery] = useState<IndividualGalleryItem[]>([]);
     const [compareLoading, setCompareLoading] = useState(false);
+    const [reidSuggestions, setReidSuggestions] = useState<ReidSuggestionResponse | null>(null);
+    const [reidSuggestionsLoading, setReidSuggestionsLoading] = useState(false);
+    const [reidSuggestionsError, setReidSuggestionsError] = useState<string | null>(null);
 
     const [createOpen, setCreateOpen] = useState(false);
     const [newIndividualId, setNewIndividualId] = useState('');
@@ -2036,6 +2251,8 @@ function SpeciesImages() {
             setAssignMsg(null);
             setCompareId('');
             setCompareGallery([]);
+            setReidSuggestions(null);
+            setReidSuggestionsError(null);
             setCreateOpen(false);
             setCreateMsg(null);
             setNewIndividualId('');
@@ -2068,6 +2285,23 @@ function SpeciesImages() {
             .finally(() => setCompareLoading(false));
     }, [compareId]);
 
+    useEffect(() => {
+        if (!isQuoll || focusedDetId == null) {
+            setReidSuggestions(null);
+            setReidSuggestionsError(null);
+            return;
+        }
+        setReidSuggestionsLoading(true);
+        setReidSuggestionsError(null);
+        fetchReidSuggestions(focusedDetId, 5)
+            .then(setReidSuggestions)
+            .catch((e: any) => {
+                setReidSuggestions(null);
+                setReidSuggestionsError(e?.message || 'No suggestions available');
+            })
+            .finally(() => setReidSuggestionsLoading(false));
+    }, [isQuoll, focusedDetId]);
+
     const sortedItems = images ? [...images.items].sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true, sensitivity: 'base' })) : [];
     const selectedIdx = selected ? sortedItems.findIndex((i) => i.id === selected.id) : -1;
     const goPrev = () => { if (selectedIdx > 0) setSelected(sortedItems[selectedIdx - 1]); };
@@ -2089,6 +2323,26 @@ function SpeciesImages() {
         withId.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
         return withId[withId.length - 1].individual_id || null;
     })();
+    const assignFocusedIndividual = async (targetId: string, notes?: string) => {
+        if (!focused) return;
+        setSavingAssign(true);
+        setAssignMsg(null);
+        try {
+            await createAnnotation({
+                detection_id: focused.id,
+                is_correct: true,
+                individual_id: targetId.trim(),
+                notes: notes?.trim() || undefined,
+            });
+            setAssignId(targetId.trim());
+            setAssignMsg(`Assigned detection #${focused.id} → ${targetId.trim()}`);
+            setCompareId(targetId.trim());
+            await refreshSelectedDetail();
+        } catch (e: any) {
+            setAssignMsg(e?.message || 'Failed to assign');
+        }
+        setSavingAssign(false);
+    };
 
     return (
         <div>
@@ -2363,6 +2617,40 @@ function SpeciesImages() {
                                                 {currentAssigned ? <span className="tag tag-info">Assigned: {currentAssigned}</span> : <span className="tag tag-muted">Unassigned</span>}
                                             </div>
                                         )}
+                                        <div style={{ marginBottom: '0.85rem' }}>
+                                            <div style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6 }}>AI suggestions (Top 5)</div>
+                                            {reidSuggestionsLoading ? (
+                                                <div className="tag tag-muted">Scoring similarities…</div>
+                                            ) : reidSuggestionsError ? (
+                                                <div className="tag tag-muted">{reidSuggestionsError}</div>
+                                            ) : !reidSuggestions || reidSuggestions.suggestions.length === 0 ? (
+                                                <div className="tag tag-muted">No suggested individuals for this detection yet.</div>
+                                            ) : (
+                                                <div style={{ display: 'grid', gap: '0.45rem' }}>
+                                                    {reidSuggestions.suggestions.map((s) => (
+                                                        <button
+                                                            key={`${focusedDetId}-${s.rank}-${s.individual_id}`}
+                                                            className="btn btn-outline"
+                                                            disabled={!focused || savingAssign}
+                                                            onClick={() => assignFocusedIndividual(s.individual_id, `AI suggestion rank ${s.rank}`)}
+                                                            style={{
+                                                                textAlign: 'left',
+                                                                display: 'flex',
+                                                                justifyContent: 'space-between',
+                                                                alignItems: 'center',
+                                                                gap: '0.75rem',
+                                                            }}
+                                                        >
+                                                            <span>#{s.rank} {s.individual_id}</span>
+                                                            <span style={{ fontSize: '0.8rem' }}>
+                                                                sim {(s.similarity * 100).toFixed(1)}% · conf {(s.confidence * 100).toFixed(1)}%
+                                                                {s.accepted_by_gate ? ' · gate pass' : ''}
+                                                            </span>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
 
                                         <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0.75rem', minWidth: 0 }}>
                                             {/* Assign row */}
@@ -2380,25 +2668,7 @@ function SpeciesImages() {
                                                     <button
                                                         className="btn btn-primary"
                                                         disabled={!focused || !assignId.trim() || savingAssign}
-                                                        onClick={async () => {
-                                                            if (!focused) return;
-                                                            setSavingAssign(true);
-                                                            setAssignMsg(null);
-                                                            try {
-                                                                await createAnnotation({
-                                                                    detection_id: focused.id,
-                                                                    is_correct: true,
-                                                                    individual_id: assignId.trim(),
-                                                                    notes: assignNotes.trim() || undefined,
-                                                                });
-                                                                setAssignMsg(`Assigned detection #${focused.id} → ${assignId.trim()}`);
-                                                                setCompareId(assignId.trim());
-                                                                await refreshSelectedDetail();
-                                                            } catch (e: any) {
-                                                                setAssignMsg(e?.message || 'Failed to assign');
-                                                            }
-                                                            setSavingAssign(false);
-                                                        }}
+                                                        onClick={() => assignFocusedIndividual(assignId, assignNotes)}
                                                     >
                                                         {savingAssign ? 'Saving…' : 'Assign'}
                                                     </button>
@@ -2540,9 +2810,11 @@ function SpeciesImages() {
                                     </div>
                                 </div>
                             )}
-                            <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                <Link to={`/review-image/${selected.id}`} className="btn btn-primary">Review Image</Link>
-                            </div>
+                            {PENDING_REVIEW_ENABLED && (
+                                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                    <Link to={`/review-image/${selected.id}`} className="btn btn-primary">Review Image</Link>
+                                </div>
+                            )}
                             <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.75rem' }}>Use ←/→ to navigate, Esc to close</div>
                         </div>
                     </div>
@@ -2675,8 +2947,8 @@ function SpeciesByIndividual() {
                                 )}
                             </p>
                             <p style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                                You can still assign a quoll individual ID manually in{' '}
-                                <Link to="/pending-review">Review</Link> (e.g. <code>02Q2</code>); those merge into this list.
+                                You can still assign a quoll individual ID manually from the species image review modal
+                                (e.g. <code>02Q2</code>); those merge into this list.
                             </p>
                         </>
                     )}
@@ -2711,7 +2983,12 @@ function SpeciesByIndividual() {
     const [gallery, setGallery] = useState<IndividualGalleryItem[]>([]);
     const [galLoading, setGalLoading] = useState(true);
     const [galSource, setGalSource] = useState<string>('');
+    const [timeline, setTimeline] = useState<{ month: string; sightings: number }[]>([]);
     const [reidInfo, setReidInfo] = useState<Record<string, unknown> | null>(null);
+    const [quickUploadBusy, setQuickUploadBusy] = useState(false);
+    const [quickUploadMsg, setQuickUploadMsg] = useState<string | null>(null);
+    const [quickUploadErr, setQuickUploadErr] = useState<string | null>(null);
+    const quickUploadInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         Promise.all([
@@ -2757,6 +3034,13 @@ function SpeciesByIndividual() {
         fetchReidInfo().then(setReidInfo).catch(() => setReidInfo(null));
     }, []);
 
+    useEffect(() => {
+        if (!decodedId) return;
+        fetchIndividualTimeline(decodedId)
+            .then((data) => setTimeline(data.monthly_counts || []))
+            .catch(() => setTimeline([]));
+    }, [decodedId]);
+
     if (loading) return <LoadingState />;
 
     let daysActive = '—';
@@ -2782,6 +3066,30 @@ function SpeciesByIndividual() {
     while (gridSlots.length < 12) gridSlots.push(null);
 
     const commonName = 'Spotted-tailed Quoll';
+    const handleQuickUpload = async (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+        const chosen = Array.from(files).filter((f) => /\.(jpe?g|png)$/i.test(f.name));
+        if (chosen.length === 0) {
+            setQuickUploadErr('Please choose JPG or PNG images.');
+            setQuickUploadMsg(null);
+            return;
+        }
+        setQuickUploadBusy(true);
+        setQuickUploadErr(null);
+        setQuickUploadMsg(null);
+        try {
+            const res = await uploadBatch(chosen, `${decodedId}_profile_upload`);
+            const status = await fetchJobStatus(res.job_id);
+            if (status.status === 'queued' || status.status === 'processing') {
+                setQuickUploadMsg(`Upload started (${chosen.length} images). Processing in background (job #${res.job_id}).`);
+            } else {
+                setQuickUploadMsg(`Uploaded ${chosen.length} images to profile workflow (job #${res.job_id}).`);
+            }
+        } catch (e: any) {
+            setQuickUploadErr(e?.message || 'Failed to upload images.');
+        }
+        setQuickUploadBusy(false);
+    };
 
     return (
         <div className="wt-individual-page">
@@ -2841,13 +3149,32 @@ function SpeciesByIndividual() {
                         <span className="wt-paw">🐾</span> Size range (typical): 35 cm – 75 cm
                     </p>
                     <div className="wt-sidebar-actions">
-                        <Link to="/images" className="wt-btn wt-btn-primary">
+                        <input
+                            ref={quickUploadInputRef}
+                            type="file"
+                            multiple
+                            accept=".jpg,.jpeg,.png"
+                            style={{ display: 'none' }}
+                            onChange={(e) => {
+                                handleQuickUpload(e.target.files);
+                                e.target.value = '';
+                            }}
+                        />
+                        <button
+                            type="button"
+                            className="wt-btn wt-btn-primary"
+                            onClick={() => quickUploadInputRef.current?.click()}
+                            disabled={quickUploadBusy}
+                        >
                             ↑ Upload Pic
-                        </Link>
+                        </button>
                         <button type="button" className="wt-btn wt-btn-outline" disabled title="Demo placeholder">
                             ♥ Like
                         </button>
                     </div>
+                    {quickUploadBusy && <p style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>Opening upload and sending images…</p>}
+                    {quickUploadMsg && <p style={{ marginTop: 8, fontSize: 12, color: 'var(--success)' }}>{quickUploadMsg}</p>}
+                    {quickUploadErr && <p style={{ marginTop: 8, fontSize: 12, color: 'var(--danger)' }}>{quickUploadErr}</p>}
                 </aside>
             </section>
 
@@ -2906,6 +3233,18 @@ function SpeciesByIndividual() {
                                     <div className="val">{daysActive}</div>
                                 </div>
                             </div>
+                            {timeline.length > 0 && (
+                                <div style={{ marginTop: 20, height: 260 }}>
+                                    <ResponsiveContainer>
+                                        <BarChart data={timeline}>
+                                            <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                                            <YAxis tick={{ fontSize: 11 }} />
+                                            <Tooltip />
+                                            <Bar dataKey="sightings" fill="var(--primary)" radius={[4, 4, 0, 0]} />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                </div>
+                            )}
                         </div>
                     )}
                     {tab === 'images' && (
@@ -3044,6 +3383,25 @@ function AdminPanel() {
         setUsers(users.map((u) => (u.id === userId ? updated : u)));
     };
 
+    const downloadAdminExport = async (url: string, filename: string) => {
+        const token = getToken();
+        const res = await fetch(url, {
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
+        if (!res.ok) {
+            throw new Error(`Export failed (${res.status})`);
+        }
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(objectUrl);
+    };
+
     if (loading) return <LoadingState />;
 
     return (
@@ -3089,9 +3447,9 @@ function AdminPanel() {
             <div className="card" style={{ marginTop: '1.5rem' }}>
                 <div className="card-header"><h3>Dataset Exports</h3></div>
                 <div className="card-body" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    <a href={getQuollExportUrl('csv')} className="btn btn-primary" download>Export Quoll Detections</a>
-                    <a href={getMetadataExportUrl('csv')} className="btn btn-outline" download>Export Full Metadata</a>
-                    <a href={getExportUrl('json')} className="btn btn-outline" download>Export Report JSON</a>
+                    <button type="button" className="btn btn-primary" onClick={() => downloadAdminExport(getQuollExportUrl('csv'), 'quoll_detections.csv').catch(() => {})}>Export Quoll Detections</button>
+                    <button type="button" className="btn btn-outline" onClick={() => downloadAdminExport(getMetadataExportUrl('csv'), 'wildlife_metadata.csv').catch(() => {})}>Export Full Metadata</button>
+                    <button type="button" className="btn btn-outline" onClick={() => downloadAdminExport(getExportUrl('json'), 'wildlife_report.json').catch(() => {})}>Export Report JSON</button>
                 </div>
             </div>
         </>

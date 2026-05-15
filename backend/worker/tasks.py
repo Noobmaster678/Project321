@@ -6,6 +6,7 @@ Start the worker:
 Using concurrency=1 because the GPU should not be shared across threads.
 """
 import asyncio
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +21,9 @@ from backend.app.models.annotation import Annotation
 from backend.app.models.image import Image
 from backend.app.models.detection import Detection
 from backend.app.models.job import ProcessingJob
+from backend.app.services.reid_utils import species_is_quoll
+
+logger = logging.getLogger(__name__)
 
 
 def _get_pipelines():
@@ -44,21 +48,11 @@ def _ensure_pipelines():
     return _md_pipeline, _awc_pipeline
 
 
-def _species_is_quoll(species: str | None) -> bool:
-    if not species:
-        return False
-    s = species.lower()
-    if "quoll" in s:
-        return True
-    target = (settings.TARGET_SPECIES or "").lower().strip()
-    return bool(target and target in s)
-
-
 async def _maybe_auto_reid_quoll(db: AsyncSession, detection: Detection) -> None:
     """If a MegaDescriptor gallery exists, assign Annotation.individual_id from crop similarity."""
     if not settings.REID_AUTO_ASSIGN:
         return
-    if not _species_is_quoll(detection.species):
+    if not species_is_quoll(detection.species):
         return
     if not detection.crop_path:
         return
@@ -76,6 +70,7 @@ async def _maybe_auto_reid_quoll(db: AsyncSession, detection: Detection) -> None
     try:
         from backend.worker.pipelines.megadescriptor_reid import predict_crop
     except ImportError:
+        logger.warning("re-ID auto-assign unavailable: pipeline dependencies missing")
         return
     try:
         iid, meta = predict_crop(
@@ -85,6 +80,7 @@ async def _maybe_auto_reid_quoll(db: AsyncSession, detection: Detection) -> None
             settings.REID_GAP_THRESHOLD,
         )
     except Exception:
+        logger.exception("re-ID auto-assign failed for detection %s", detection.id)
         return
     if not iid:
         return
@@ -180,6 +176,8 @@ async def _run_process_batch(job_id: int, image_ids: list[int]):
             job.started_at = datetime.now(timezone.utc)
             await db.commit()
 
+    failed_image_ids: list[int] = []
+
     for img_id in image_ids:
         try:
             async with async_session_factory() as db:
@@ -192,17 +190,28 @@ async def _run_process_batch(job_id: int, image_ids: list[int]):
                 if job:
                     job.processed_images += 1
                     await db.commit()
-        except Exception:
+        except Exception as exc:
+            failed_image_ids.append(img_id)
+            logger.exception("Batch processing failed for image %s in job %s", img_id, job_id)
             async with async_session_factory() as db:
                 job = (await db.execute(select(ProcessingJob).where(ProcessingJob.id == job_id))).scalar_one_or_none()
                 if job:
                     job.failed_images += 1
+                    job.error_message = f"{type(exc).__name__}: {str(exc)[:300]}"
                     await db.commit()
 
     async with async_session_factory() as db:
         job = (await db.execute(select(ProcessingJob).where(ProcessingJob.id == job_id))).scalar_one_or_none()
         if job:
-            job.status = "completed"
+            if job.failed_images > 0:
+                job.status = "completed_with_errors"
+                if failed_image_ids:
+                    ids_preview = ",".join(str(i) for i in failed_image_ids[:50])
+                    suffix = "..." if len(failed_image_ids) > 50 else ""
+                    job.error_message = f"Failed image IDs: {ids_preview}{suffix}"
+            else:
+                job.status = "completed"
+                job.error_message = None
             job.completed_at = datetime.now(timezone.utc)
             await db.commit()
 
@@ -213,13 +222,13 @@ async def _run_process_batch(job_id: int, image_ids: list[int]):
             await assign_event_ids(db)
             await db.commit()
     except Exception:
-        pass
+        logger.exception("Post-batch event grouping failed for job %s", job_id)
 
     # Post-processing: compute deployment trap-nights from image date ranges
     try:
         await _update_deployment_trap_nights()
     except Exception:
-        pass
+        logger.exception("Post-batch trap-night update failed for job %s", job_id)
 
 
 async def _update_deployment_trap_nights():
@@ -258,17 +267,17 @@ def process_batch_task(self, job_id: int, image_ids: list[int]):
     return {"job_id": job_id, "processed": len(image_ids)}
 
 
-async def _run_reid_backfill_celery(mode: str, limit: int):
+async def _run_reid_backfill_celery(mode: str, limit: int, refresh_gallery: bool):
     """Celery entry: same DB logic as POST /api/admin/reid-backfill (sync path)."""
     from backend.app.services.reid_backfill import run_reid_backfill
 
     async with async_session_factory() as db:
-        stats = await run_reid_backfill(db, mode=mode, limit=limit)
+        stats = await run_reid_backfill(db, mode=mode, limit=limit, refresh_gallery=refresh_gallery)
         await db.commit()
         return stats
 
 
 @celery_app.task(name="backend.worker.tasks.reid_backfill_task", bind=True)
-def reid_backfill_task(self, mode: str = "missing_only", limit: int = 2000):
-    stats = asyncio.run(_run_reid_backfill_celery(mode, limit))
+def reid_backfill_task(self, mode: str = "missing_only", limit: int = 2000, refresh_gallery: bool = False):
+    stats = asyncio.run(_run_reid_backfill_celery(mode, limit, refresh_gallery))
     return {"status": "completed", **stats}

@@ -4,6 +4,7 @@ import os
 import shutil
 import zipfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse, Response
@@ -24,6 +25,22 @@ from backend.app.schemas.schemas import UserOut, ModelVersionOut, ModelVersionCr
 from backend.app.utils.dependencies import require_role
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+def _database_file_path() -> Path | None:
+    url = settings.DATABASE_URL
+    if url.startswith("sqlite+aiosqlite:///./"):
+        return (settings.PROJECT_ROOT / url.removeprefix("sqlite+aiosqlite:///./")).resolve()
+    if url.startswith("sqlite+aiosqlite:///"):
+        raw = url.removeprefix("sqlite+aiosqlite:///")
+        return Path(raw).resolve()
+    if url.startswith("sqlite:///"):
+        raw = url.removeprefix("sqlite:///")
+        return Path(raw).resolve()
+    parsed = urlparse(url)
+    if parsed.scheme.startswith("sqlite") and parsed.path:
+        return Path(parsed.path).resolve()
+    return None
 
 
 @router.get("/users", response_model=list[UserOut])
@@ -72,8 +89,8 @@ async def system_metrics(
         select(func.count(ProcessingJob.id)).where(ProcessingJob.status.in_(["queued", "processing"]))
     )).scalar() or 0
 
-    db_path = Path("wildlife.db")
-    db_size_mb = round(db_path.stat().st_size / 1024 / 1024, 2) if db_path.exists() else 0
+    db_path = _database_file_path()
+    db_size_mb = round(db_path.stat().st_size / 1024 / 1024, 2) if db_path and db_path.exists() else 0
 
     storage_size_mb = 0
     if settings.STORAGE_ROOT.exists():
@@ -293,7 +310,7 @@ async def admin_reid_backfill(
 
             delay = getattr(reid_backfill_task, "delay", None)
             if callable(delay):
-                async_result = delay(payload.mode, payload.limit)
+                async_result = delay(payload.mode, payload.limit, payload.refresh_gallery)
                 tid = getattr(async_result, "id", None)
                 if tid is not None:
                     return {
@@ -301,6 +318,7 @@ async def admin_reid_backfill(
                         "task_id": str(tid),
                         "mode": payload.mode,
                         "limit": payload.limit,
+                        "refresh_gallery": payload.refresh_gallery,
                     }
         except Exception:
             pass
@@ -308,7 +326,12 @@ async def admin_reid_backfill(
     try:
         from backend.app.services.reid_backfill import run_reid_backfill
 
-        stats = await run_reid_backfill(db, mode=payload.mode, limit=payload.limit)
+        stats = await run_reid_backfill(
+            db,
+            mode=payload.mode,
+            limit=payload.limit,
+            refresh_gallery=payload.refresh_gallery,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 

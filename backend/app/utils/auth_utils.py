@@ -5,18 +5,10 @@ from typing import Optional
 import bcrypt
 from jose import JWTError, jwt
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-SECRET_KEY = "wildlife-platform-secret-change-in-production"
-"""Secret key for JWT signing. MUST be changed in production environment."""
+from backend.app.config import settings
 
 ALGORITHM = "HS256"
 """Algorithm used for JWT token encoding/decoding."""
-
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
-"""Default JWT token expiration time in minutes (24 hours)."""
 
 
 # ============================================================
@@ -80,7 +72,7 @@ def create_access_token(
         expire_time = datetime.now(timezone.utc) + expires_delta
     else:
         expire_time = datetime.now(timezone.utc) + timedelta(
-            minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+            minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )
     
     # Add expiration claim
@@ -89,7 +81,7 @@ def create_access_token(
     # Encode and sign token
     encoded_token = jwt.encode(
         token_data,
-        SECRET_KEY,
+        settings.SECRET_KEY,
         algorithm=ALGORITHM
     )
     
@@ -108,7 +100,7 @@ def decode_access_token(token: str) -> Optional[dict]:
     try:
         payload = jwt.decode(
             token,
-            SECRET_KEY,
+            settings.SECRET_KEY,
             algorithms=[ALGORITHM]
         )
         return payload

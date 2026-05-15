@@ -166,7 +166,8 @@ async def get_job_status(job_id: int, db: AsyncSession = Depends(get_db)):
     job = (await db.execute(select(ProcessingJob).where(ProcessingJob.id == job_id))).scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    pct = (job.processed_images / job.total_images * 100) if job.total_images > 0 else 0.0
+    completed_count = (job.processed_images or 0) + (job.failed_images or 0)
+    pct = (completed_count / job.total_images * 100) if job.total_images > 0 else 0.0
     resp = JobStatus.model_validate(job)
     resp.percent = round(pct, 2)
     return resp

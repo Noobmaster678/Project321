@@ -3,11 +3,12 @@ import csv
 import io
 import json
 import zipfile
+from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse, Response
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -25,18 +26,34 @@ router = APIRouter(prefix="/exports", tags=["Exports"])
 @router.get("/quoll-detections")
 async def export_quoll_detections(
     min_confidence: float = 0.0,
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    camera_name: str | None = Query(None),
+    individual_id: str | None = Query(None),
     format: str = Query("csv", pattern="^(csv|json)$"),
+    _user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Export all quoll detections as CSV or JSON."""
     query = (
         select(Detection)
+        .join(Image, Image.id == Detection.image_id)
         .where(Detection.species.ilike("%quoll%"))
         .options(selectinload(Detection.image).selectinload(Image.camera))
         .order_by(Detection.classification_confidence.desc())
     )
     if min_confidence > 0:
         query = query.where(Detection.classification_confidence >= min_confidence)
+    if date_from:
+        query = query.where(func.date(Image.captured_at) >= date_from)
+    if date_to:
+        query = query.where(func.date(Image.captured_at) <= date_to)
+    if camera_name:
+        query = query.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
+    if individual_id:
+        query = query.join(Annotation, Annotation.detection_id == Detection.id).where(
+            Annotation.individual_id.ilike(f"%{individual_id}%")
+        )
 
     dets = (await db.execute(query)).scalars().all()
 
@@ -78,7 +95,12 @@ async def export_quoll_detections(
 
 @router.get("/metadata")
 async def export_metadata(
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    camera_name: str | None = Query(None),
+    individual_id: str | None = Query(None),
     format: str = Query("csv", pattern="^(csv|json)$"),
+    _user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Export full metadata: images + detections + annotations."""
@@ -90,6 +112,19 @@ async def export_metadata(
         )
         .order_by(Detection.id)
     )
+    needs_image_join = bool(date_from or date_to or camera_name)
+    if needs_image_join:
+        query = query.join(Image, Image.id == Detection.image_id)
+    if date_from:
+        query = query.where(func.date(Image.captured_at) >= date_from)
+    if date_to:
+        query = query.where(func.date(Image.captured_at) <= date_to)
+    if camera_name:
+        query = query.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
+    if individual_id:
+        query = query.join(Annotation, Annotation.detection_id == Detection.id).where(
+            Annotation.individual_id.ilike(f"%{individual_id}%")
+        )
     dets = (await db.execute(query)).scalars().all()
 
     rows = []
@@ -139,6 +174,7 @@ async def export_metadata(
 async def export_crops_zip(
     species: str = Query("quoll", description="Species filter"),
     min_confidence: float = 0.0,
+    _user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Export a ZIP of cropped detection images for a given species."""

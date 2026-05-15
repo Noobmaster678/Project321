@@ -1,7 +1,4 @@
 """Dashboard statistics API endpoints."""
-import json
-from pathlib import Path
-from datetime import datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,25 +12,9 @@ from backend.app.models.collection import Collection
 from backend.app.models.individual import Individual
 from backend.app.models.sighting import Sighting
 from backend.app.schemas.schemas import DashboardStats
+from backend.app.services.reid_utils import quoll_sql_filter
 
 router = APIRouter(prefix="/stats", tags=["Statistics"])
-
-_DBG_LOG_PATH = Path("debug-687764.log")
-
-def _dbg_log(hypothesis_id: str, location: str, message: str, data: dict | None = None, run_id: str = "pre-fix") -> None:
-    try:
-        payload = {
-            "sessionId": "687764",
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(datetime.utcnow().timestamp() * 1000),
-        }
-        _DBG_LOG_PATH.open("a", encoding="utf-8").write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
 
 
 @router.get("/", response_model=DashboardStats)
@@ -135,77 +116,69 @@ async def individual_stats(db: AsyncSession = Depends(get_db)):
     Uploading images alone does not create rows here; assigning an individual ID on a quoll
     detection in Review does. CSV import may populate `individuals` + sightings separately.
     """
-    _dbg_log("H1", "backend/app/api/stats.py:individual_stats", "enter", {"decodedSpeciesFilter": "%quoll%"})
-    try:
-        by_key: dict[str, dict] = {}
-        result = await db.execute(select(Individual).order_by(Individual.individual_id))
-        inds = result.scalars().all()
-        _dbg_log("H1", "backend/app/api/stats.py:individual_stats", "loadedIndividuals", {"count": len(inds)})
-        for ind in inds:
-            by_key[ind.individual_id] = {
-                "individual_id": ind.individual_id,
-                "species": ind.species,
-                "first_seen": ind.first_seen,
-                "last_seen": ind.last_seen,
-                "total_sightings": ind.total_sightings or 0,
-            }
+    by_key: dict[str, dict] = {}
+    result = await db.execute(select(Individual).order_by(Individual.individual_id))
+    inds = result.scalars().all()
+    for ind in inds:
+        by_key[ind.individual_id] = {
+            "individual_id": ind.individual_id,
+            "species": ind.species,
+            "first_seen": ind.first_seen,
+            "last_seen": ind.last_seen,
+            "total_sightings": ind.total_sightings or 0,
+        }
 
-        ann_q = (
-            select(
-                Annotation.individual_id,
-                func.count(Detection.id).label("cnt"),
-                func.min(Image.captured_at).label("first"),
-                func.max(Image.captured_at).label("last"),
-            )
-            .join(Detection, Annotation.detection_id == Detection.id)
-            .join(Image, Detection.image_id == Image.id)
-            .where(
-                Annotation.individual_id.isnot(None),
-                Annotation.individual_id != "",
-                Detection.species.isnot(None),
-                Detection.species.ilike("%quoll%"),
-            )
-            .group_by(Annotation.individual_id)
+    ann_q = (
+        select(
+            Annotation.individual_id,
+            func.count(Detection.id).label("cnt"),
+            func.min(Image.captured_at).label("first"),
+            func.max(Image.captured_at).label("last"),
         )
-        ann_rows = (await db.execute(ann_q)).all()
-        _dbg_log("H2", "backend/app/api/stats.py:individual_stats", "loadedAnnotationAggregate", {"rows": len(ann_rows)})
-        for row in ann_rows:
-            iid, cnt, first, last = row
-            if not iid:
-                continue
-            ann_cnt = int(cnt)
-            if iid not in by_key:
-                sp = (
-                    await db.execute(
-                        select(Detection.species)
-                        .join(Annotation, Annotation.detection_id == Detection.id)
-                        .where(Annotation.individual_id == iid)
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                by_key[iid] = {
-                    "individual_id": iid,
-                    "species": sp or "Spotted-tailed Quoll",
-                    "first_seen": first,
-                    "last_seen": last,
-                    "total_sightings": ann_cnt,
-                }
-            else:
-                cur = by_key[iid]
-                cur["total_sightings"] = max(cur["total_sightings"], ann_cnt)
-                if first is not None:
-                    if cur["first_seen"] is None or first < cur["first_seen"]:
-                        cur["first_seen"] = first
-                if last is not None:
-                    if cur["last_seen"] is None or last > cur["last_seen"]:
-                        cur["last_seen"] = last
+        .join(Detection, Annotation.detection_id == Detection.id)
+        .join(Image, Detection.image_id == Image.id)
+        .where(
+            Annotation.individual_id.isnot(None),
+            Annotation.individual_id != "",
+            Detection.species.isnot(None),
+            quoll_sql_filter(),
+        )
+        .group_by(Annotation.individual_id)
+    )
+    ann_rows = (await db.execute(ann_q)).all()
+    for row in ann_rows:
+        iid, cnt, first, last = row
+        if not iid:
+            continue
+        ann_cnt = int(cnt)
+        if iid not in by_key:
+            sp = (
+                await db.execute(
+                    select(Detection.species)
+                    .join(Annotation, Annotation.detection_id == Detection.id)
+                    .where(Annotation.individual_id == iid)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            by_key[iid] = {
+                "individual_id": iid,
+                "species": sp or "Spotted-tailed Quoll",
+                "first_seen": first,
+                "last_seen": last,
+                "total_sightings": ann_cnt,
+            }
+        else:
+            cur = by_key[iid]
+            cur["total_sightings"] = max(cur["total_sightings"], ann_cnt)
+            if first is not None:
+                if cur["first_seen"] is None or first < cur["first_seen"]:
+                    cur["first_seen"] = first
+            if last is not None:
+                if cur["last_seen"] is None or last > cur["last_seen"]:
+                    cur["last_seen"] = last
 
-        out = sorted(by_key.values(), key=lambda x: x["individual_id"])
-        _dbg_log("H3", "backend/app/api/stats.py:individual_stats", "returning", {"count": len(out)})
-        return out
-    except Exception as e:
-        _dbg_log("H4", "backend/app/api/stats.py:individual_stats", "exception", {"type": type(e).__name__, "msg": str(e)[:400]})
-        raise
+    out = sorted(by_key.values(), key=lambda x: x["individual_id"])
+    return out
 
 
 @router.get("/individuals/{individual_id}/gallery")
@@ -276,3 +249,41 @@ async def individual_gallery(individual_id: str, db: AsyncSession = Depends(get_
         src = "sightings"
 
     return {"individual_id": individual_id, "items": items, "source": src}
+
+
+@router.get("/individuals/{individual_id}/timeline")
+async def individual_timeline(individual_id: str, db: AsyncSession = Depends(get_db)):
+    """Chronological timeline and per-month encounter totals for one individual."""
+    q = (
+        select(
+            Detection.id,
+            Image.captured_at,
+            Camera.name,
+            Camera.latitude,
+            Camera.longitude,
+        )
+        .join(Image, Detection.image_id == Image.id)
+        .outerjoin(Camera, Camera.id == Image.camera_id)
+        .join(Annotation, Annotation.detection_id == Detection.id)
+        .where(Annotation.individual_id == individual_id)
+        .order_by(Image.captured_at.asc().nullslast(), Detection.id.asc())
+    )
+    rows = (await db.execute(q)).all()
+    events = []
+    by_month: dict[str, int] = {}
+    for det_id, captured_at, cam_name, lat, lon in rows:
+        month_key = None
+        if captured_at:
+            month_key = captured_at.strftime("%Y-%m")
+            by_month[month_key] = by_month.get(month_key, 0) + 1
+        events.append(
+            {
+                "detection_id": int(det_id),
+                "captured_at": str(captured_at) if captured_at else None,
+                "camera_name": cam_name,
+                "latitude": float(lat) if lat is not None else None,
+                "longitude": float(lon) if lon is not None else None,
+            }
+        )
+    monthly_counts = [{"month": k, "sightings": by_month[k]} for k in sorted(by_month.keys())]
+    return {"individual_id": individual_id, "events": events, "monthly_counts": monthly_counts}

@@ -9,7 +9,7 @@ class ProcessingJob(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     batch_name = Column(String, nullable=True)
-    status = Column(String, nullable=False, default="queued")  # queued, processing, completed, failed
+    status = Column(String, nullable=False, default="queued")  # queued, processing, completed, completed_with_errors, failed
     total_images = Column(Integer, default=0)
     processed_images = Column(Integer, default=0)
     failed_images = Column(Integer, default=0)

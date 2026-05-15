@@ -1,4 +1,5 @@
 """Report generation and export API endpoints."""
+from datetime import date
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import Response
 from sqlalchemy import select, func, distinct
@@ -10,6 +11,7 @@ from backend.app.models.detection import Detection
 from backend.app.models.image import Image
 from backend.app.models.camera import Camera
 from backend.app.schemas.schemas import ReportOut, RAIReport, RAIEntry
+from backend.app.utils.dependencies import get_current_user
 from backend.app.services.report_service import (
     generate_summary_report, generate_batch_report,
     export_report_csv, export_report_json,
@@ -21,10 +23,21 @@ router = APIRouter(prefix="/reports", tags=["Reports"])
 @router.get("/summary", response_model=ReportOut)
 async def summary_report(
     species: str | None = None,
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    camera_name: str | None = Query(None),
+    individual_id: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     """Overall platform summary report with species distribution, hourly activity, camera counts."""
-    report = await generate_summary_report(db, species_filter=species)
+    report = await generate_summary_report(
+        db,
+        species_filter=species,
+        date_from=date_from,
+        date_to=date_to,
+        camera_name=camera_name,
+        individual_id=individual_id,
+    )
     return report
 
 
@@ -99,10 +112,22 @@ async def rai_report(db: AsyncSession = Depends(get_db)):
 async def export_report(
     format: str = Query("csv", pattern="^(csv|json)$"),
     species: str | None = None,
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    camera_name: str | None = Query(None),
+    individual_id: str | None = Query(None),
+    _user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Export the summary report as CSV or JSON file download."""
-    report = await generate_summary_report(db, species_filter=species)
+    report = await generate_summary_report(
+        db,
+        species_filter=species,
+        date_from=date_from,
+        date_to=date_to,
+        camera_name=camera_name,
+        individual_id=individual_id,
+    )
 
     if format == "csv":
         content = export_report_csv(report)

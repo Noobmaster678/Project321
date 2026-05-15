@@ -1,14 +1,15 @@
 """Authentication API endpoints — register, login, current user."""
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_db
 from backend.app.models.user import User
 from backend.app.schemas.schemas import UserCreate, UserOut, TokenResponse
+from backend.app.config import settings
 from backend.app.utils.auth_utils import hash_password, verify_password, create_access_token
-from backend.app.utils.dependencies import get_current_user
+from backend.app.utils.dependencies import get_current_user, get_optional_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -18,7 +19,11 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
+async def register(
+    payload: UserCreate,
+    db: AsyncSession = Depends(get_db),
+    requester: User | None = Depends(get_optional_user),
+):
     """Create a new user account.
     
     Args:
@@ -49,6 +54,22 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}"
         )
+
+    total_users = (await db.execute(select(func.count(User.id)))).scalar() or 0
+    if not settings.OPEN_REGISTRATION and total_users > 0 and requester is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Open registration is disabled",
+        )
+
+    if payload.role == "admin":
+        bootstrap_admin = total_users == 0
+        requester_is_admin = requester is not None and requester.role == "admin"
+        if not bootstrap_admin and not requester_is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only admins can create admin accounts",
+            )
 
     # Create new user with hashed password
     new_user = User(

@@ -2,34 +2,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import reid_gallery_path, settings
 from backend.app.models.annotation import Annotation
 from backend.app.models.detection import Detection
+from backend.app.services.reid_utils import species_is_quoll, quoll_sql_filter
 
 MEGAD_ANNOTATOR = "megadescriptor_reid"
-
-
-def _species_is_quoll(species: str | None) -> bool:
-    if not species:
-        return False
-    s = species.lower()
-    if "quoll" in s:
-        return True
-    target = (settings.TARGET_SPECIES or "").lower().strip()
-    return bool(target and target in s)
-
-
-def _quoll_sql_filter():
-    parts = [Detection.species.ilike("%quoll%")]
-    ts = (settings.TARGET_SPECIES or "").strip()
-    if ts:
-        parts.append(Detection.species.ilike(f"%{ts}%"))
-    return or_(*parts)
+logger = logging.getLogger(__name__)
 
 
 async def run_reid_backfill(
@@ -37,6 +22,7 @@ async def run_reid_backfill(
     *,
     mode: str,
     limit: int,
+    refresh_gallery: bool = False,
 ) -> dict:
     """
     mode:
@@ -68,7 +54,7 @@ async def run_reid_backfill(
     base_filter = and_(
         Detection.crop_path.isnot(None),
         Detection.crop_path != "",
-        _quoll_sql_filter(),
+        quoll_sql_filter(),
     )
 
     if mode == "refresh_auto":
@@ -86,7 +72,7 @@ async def run_reid_backfill(
 
     for det in dets:
         stats["candidates"] += 1
-        if not _species_is_quoll(det.species):
+        if not species_is_quoll(det.species):
             stats["skipped"] += 1
             continue
 
@@ -119,6 +105,7 @@ async def run_reid_backfill(
                 settings.REID_GAP_THRESHOLD,
             )
         except Exception:
+            logger.exception("Re-ID backfill failed for detection %s", det.id)
             stats["errors"] += 1
             continue
 
@@ -137,5 +124,10 @@ async def run_reid_backfill(
             )
         )
         stats["assigned"] += 1
+
+    if refresh_gallery:
+        from backend.app.services.reid_learning import rebuild_gallery_from_confirmed_annotations
+
+        stats.update(await rebuild_gallery_from_confirmed_annotations(db))
 
     return stats

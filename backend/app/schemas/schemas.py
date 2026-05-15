@@ -246,6 +246,9 @@ class ReportOut(BaseModel):
     species_distribution: list[dict] = []
     camera_counts: list[dict] = []
     hourly_activity: list[dict] = []
+    monthly_activity: list[dict] = []
+    identified_quolls_over_time: list[dict] = []
+    recent_sightings: list[dict] = []
     rai_data: list[dict] = []
     total_trap_nights: float = 0.0
 
@@ -339,6 +342,24 @@ class ReidBackfillRequest(BaseModel):
     mode: Literal["missing_only", "refresh_auto"] = "missing_only"
     limit: int = Field(default=2000, ge=1, le=50_000)
     run_async: bool = False
+    refresh_gallery: bool = False
+
+
+class ReidSuggestionItem(BaseModel):
+    rank: int
+    individual_id: str
+    similarity: float
+    confidence: float
+    accepted_by_gate: bool = False
+
+
+class ReidSuggestionResponse(BaseModel):
+    detection_id: int
+    suggestions: list[ReidSuggestionItem] = []
+    gate_accepts_top1: bool = False
+    sim_threshold: float
+    gap_threshold: float
+    gap: float
 
 
 # ---------------------------------------------------------------------------
