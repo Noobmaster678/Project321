@@ -11,6 +11,7 @@ from backend.app.db.session import get_db
 from backend.app.models.detection import Detection
 from backend.app.schemas.schemas import ReidSuggestionResponse, ReidSuggestionItem
 from backend.app.services.reid_learning import log_reid_suggestions
+from backend.app.utils.dependencies import get_current_user
 
 router = APIRouter(prefix="/reid", tags=["Re-ID"])
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ async def reid_model_info():
 async def reid_detection_suggestions(
     detection_id: int,
     top_k: int = Query(5, ge=1, le=10),
+    _user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Return top-k re-ID suggestions for a detection crop and log shown candidates."""

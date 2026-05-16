@@ -27,6 +27,7 @@ async def summary_report(
     date_to: date | None = Query(None),
     camera_name: str | None = Query(None),
     individual_id: str | None = Query(None),
+    _user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Overall platform summary report with species distribution, hourly activity, camera counts."""
