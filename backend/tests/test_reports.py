@@ -2,6 +2,8 @@
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.conftest import auth_header
+
 
 @pytest.mark.asyncio
 async def test_summary_report_empty(client: AsyncClient):
@@ -31,16 +33,24 @@ async def test_summary_report_species_filter(client: AsyncClient, sample_data):
 
 
 @pytest.mark.asyncio
-async def test_export_csv(client: AsyncClient, sample_data):
-    resp = await client.get("/api/reports/export", params={"format": "csv"})
+async def test_export_csv(client: AsyncClient, test_user, sample_data):
+    resp = await client.get(
+        "/api/reports/export",
+        params={"format": "csv"},
+        headers=auth_header(test_user),
+    )
     assert resp.status_code == 200
     assert "text/csv" in resp.headers["content-type"]
     assert "total_images" in resp.text
 
 
 @pytest.mark.asyncio
-async def test_export_json(client: AsyncClient, sample_data):
-    resp = await client.get("/api/reports/export", params={"format": "json"})
+async def test_export_json(client: AsyncClient, test_user, sample_data):
+    resp = await client.get(
+        "/api/reports/export",
+        params={"format": "json"},
+        headers=auth_header(test_user),
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert "total_images" in data
