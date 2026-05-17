@@ -47,12 +47,18 @@ async def register(
             detail="Email already registered"
         )
 
-    # Validate role
+    # Public registration must never grant elevated privileges; admins can
+    # promote users through the admin user-management endpoint.
     valid_roles = ("admin", "researcher", "reviewer")
     if payload.role not in valid_roles:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}"
+        )
+    if payload.role != "reviewer":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New accounts are registered as reviewer; an admin must assign elevated roles"
         )
 
     total_users = (await db.execute(select(func.count(User.id)))).scalar() or 0
@@ -76,7 +82,7 @@ async def register(
         email=payload.email,
         full_name=payload.full_name,
         hashed_password=hash_password(payload.password),
-        role=payload.role,
+        role="reviewer",
     )
     db.add(new_user)
     await db.flush()

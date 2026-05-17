@@ -93,6 +93,7 @@ export interface Detection {
     model_version: string | null;
     crop_path: string | null;
     review_status: string | null;
+    individual_id?: string | null;
     created_at: string | null;
     annotations?: AnnotationData[];
 }
@@ -288,14 +289,13 @@ export async function login(email: string, password: string): Promise<UserData> 
  * param email - The new user's email address.
  * param password - The new user's desired password.
  * param fullName - The user's first and last name.
- * param role - The authorization role (e.g., 'admin', 'researcher').
  * returns A Promise resolving to the newly created UserData.
  */
-export async function register(email: string, password: string, fullName: string, role: string): Promise<UserData> {
+export async function register(email: string, password: string, fullName: string): Promise<UserData> {
     const res = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, full_name: fullName, role }),
+        body: JSON.stringify({ email, password, full_name: fullName }),
     });
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -630,7 +630,10 @@ export function storageUrl(path: string): string {
 // ---- Missed detection (user correction: "model said no animal but there is one")
 export async function createMissedDetection(
     imageId: number,
-    payload: { bbox_x: number; bbox_y: number; bbox_w: number; bbox_h: number; species: string; flag_for_retraining?: boolean },
+    payload: {
+        bbox_x: number; bbox_y: number; bbox_w: number; bbox_h: number; species: string;
+        individual_id?: string; notes?: string; flag_for_retraining?: boolean;
+    },
 ): Promise<{ id: number; image_id: number; species: string; created_at: string | null }> {
     const res = await apiFetch(`${API_BASE}/images/${imageId}/missed-detection`, {
         method: 'POST',

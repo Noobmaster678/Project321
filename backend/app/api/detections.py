@@ -15,6 +15,21 @@ from backend.app.schemas.schemas import DetectionOut, DetectionDetail, Paginated
 router = APIRouter(prefix="/detections", tags=["Detections"])
 
 
+def _latest_individual_id(det: Detection) -> str | None:
+    """Return the latest non-empty individual assignment for a detection."""
+    with_ids = [ann for ann in det.annotations if ann.individual_id]
+    if not with_ids:
+        return None
+    with_ids.sort(key=lambda ann: (ann.created_at is not None, ann.created_at or dt.min, ann.id))
+    return with_ids[-1].individual_id
+
+
+def _detection_out(det: Detection) -> DetectionOut:
+    out = DetectionOut.model_validate(det)
+    out.individual_id = _latest_individual_id(det)
+    return out
+
+
 @router.get("/", response_model=PaginatedResponse)
 async def list_detections(
     page: int = Query(1, ge=1),
@@ -29,6 +44,7 @@ async def list_detections(
     date_to: str | None = Query(None, description="ISO date YYYY-MM-DD"),
     review_status: str | None = Query(None, description="unreviewed, verified, corrected, flagged"),
     category: str | None = None,
+    individual_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """List detections with optional filters."""
@@ -47,6 +63,9 @@ async def list_detections(
         query = query.where(Detection.image_id == image_id)
     if category is not None:
         query = query.where(Detection.category == category)
+    if individual_id is not None:
+        query = query.join(Annotation, Annotation.detection_id == Detection.id)
+        query = query.where(Annotation.individual_id == individual_id)
     if camera_id is not None:
         query = query.where(Image.camera_id == camera_id)
     if collection_id is not None:
@@ -77,14 +96,14 @@ async def list_detections(
             flagged_ids = select(Annotation.detection_id).where(Annotation.flag_for_retraining == True).distinct()  # noqa: E712
             query = query.where(Detection.id.in_(flagged_ids))
 
-    count_query = select(func.count()).select_from(query.subquery())
+    count_query = select(func.count()).select_from(query.with_only_columns(Detection.id).distinct().subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.offset((page - 1) * per_page).limit(per_page)
+    query = query.options(selectinload(Detection.annotations)).distinct().offset((page - 1) * per_page).limit(per_page)
     detections = (await db.execute(query)).scalars().all()
 
     return PaginatedResponse(
-        items=[DetectionOut.model_validate(d) for d in detections],
+        items=[_detection_out(d) for d in detections],
         total=total, page=page, per_page=per_page,
         pages=(total + per_page - 1) // per_page if per_page > 0 else 0,
     )
@@ -178,7 +197,7 @@ async def get_detection(detection_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Detection not found")
 
     return DetectionDetail(
-        **DetectionOut.model_validate(det).model_dump(),
+        **_detection_out(det).model_dump(),
         image=ImageOut.model_validate(det.image) if det.image else None,
         camera=CameraOut.model_validate(det.image.camera) if det.image and det.image.camera else None,
         annotations=[AnnotationOut.model_validate(a) for a in det.annotations],
