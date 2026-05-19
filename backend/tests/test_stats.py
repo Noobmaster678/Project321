@@ -2,6 +2,8 @@
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.conftest import auth_header
+
 
 @pytest.mark.asyncio
 async def test_dashboard_stats_empty(client: AsyncClient):
@@ -55,6 +57,18 @@ async def test_reid_info(client: AsyncClient):
     assert resp.status_code == 200
     data = resp.json()
     assert "model_name" in data
+
+
+@pytest.mark.asyncio
+async def test_reid_suggestions_require_auth(client: AsyncClient, test_user):
+    unauthenticated = await client.get("/api/reid/detections/1/suggestions")
+    assert unauthenticated.status_code == 401
+
+    authenticated = await client.get(
+        "/api/reid/detections/1/suggestions",
+        headers=auth_header(test_user),
+    )
+    assert authenticated.status_code == 404
 
 
 @pytest.mark.asyncio
