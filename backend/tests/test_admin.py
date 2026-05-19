@@ -1,9 +1,16 @@
 """Tests for admin-only endpoints: user management, system metrics."""
+import sys
+import types
 from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.config import settings
+from backend.app.models.annotation import Annotation
+from backend.app.services.reid_backfill import MEGAD_ANNOTATOR, run_reid_backfill
 from backend.tests.conftest import auth_header
 
 
@@ -81,3 +88,56 @@ async def test_reid_backfill_no_gallery(client: AsyncClient, admin_user, monkeyp
     )
     assert resp.status_code == 400
     assert "gallery" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_reid_backfill_refresh_auto_respects_limit(
+    db: AsyncSession,
+    sample_data,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "STORAGE_ROOT", tmp_path)
+    crops_dir = tmp_path / "crops"
+    crops_dir.mkdir()
+
+    gallery = tmp_path / "models" / "gallery.pt"
+    gallery.parent.mkdir()
+    gallery.write_bytes(b"fake gallery")
+    monkeypatch.setattr("backend.app.services.reid_backfill.reid_gallery_path", lambda: gallery)
+
+    dummy_reid = types.ModuleType("backend.worker.pipelines.megadescriptor_reid")
+    dummy_reid.predict_crop = lambda *_args, **_kwargs: (
+        "new-quoll",
+        {"s1": 0.91, "gap": 0.22},
+    )
+    monkeypatch.setitem(sys.modules, "backend.worker.pipelines.megadescriptor_reid", dummy_reid)
+
+    detections = sample_data["detections"]
+    for det in detections:
+        det.species = "Dasyurus sp | Quoll sp"
+        det.crop_path = f"crops/{det.id}.jpg"
+        (tmp_path / det.crop_path).write_bytes(b"crop")
+        db.add(
+            Annotation(
+                detection_id=det.id,
+                annotator=MEGAD_ANNOTATOR,
+                individual_id=f"old-{det.id}",
+            )
+        )
+    await db.commit()
+
+    stats = await run_reid_backfill(db, mode="refresh_auto", limit=1)
+
+    rows = (await db.execute(select(Annotation).order_by(Annotation.detection_id))).scalars().all()
+    annotations_by_detection: dict[int, list[Annotation]] = {}
+    for ann in rows:
+        annotations_by_detection.setdefault(ann.detection_id, []).append(ann)
+
+    assert stats["removed_auto"] == 1
+    assert any(
+        ann.individual_id == "new-quoll"
+        for ann in annotations_by_detection[detections[0].id]
+    )
+    for det in detections[1:]:
+        assert [ann.individual_id for ann in annotations_by_detection[det.id]] == [f"old-{det.id}"]
