@@ -102,7 +102,10 @@ async def incremental_update_from_detection(db: AsyncSession, detection_id: int,
 async def rebuild_gallery_from_confirmed_annotations(db: AsyncSession) -> dict[str, int]:
     """Rebuild gallery prototypes from manual confirmed IDs (scheduled/manual path)."""
     try:
-        from backend.worker.pipelines.megadescriptor_reid import embed_crop, incremental_update_gallery
+        import torch
+        import torch.nn.functional as F
+
+        from backend.worker.pipelines.megadescriptor_reid import embed_crop
     except ImportError as exc:
         raise ValueError(f"Re-ID dependencies missing: {exc}") from exc
 
@@ -125,13 +128,34 @@ async def rebuild_gallery_from_confirmed_annotations(db: AsyncSession) -> dict[s
 
     updated = 0
     skipped = 0
+    class_names: list[str] = []
+    sums: dict[str, torch.Tensor] = {}
+    counts: dict[str, int] = {}
     for individual_id, crop_abs in pairs:
         emb = embed_crop(crop_abs, gallery)
         if emb is None:
             skipped += 1
             continue
-        if incremental_update_gallery(gallery, individual_id, emb):
-            updated += 1
+        emb = F.normalize(emb.float().view(-1), p=2, dim=0).cpu()
+        if individual_id not in sums:
+            class_names.append(individual_id)
+            sums[individual_id] = emb.clone()
+            counts[individual_id] = 1
         else:
-            skipped += 1
+            sums[individual_id] = sums[individual_id] + emb
+            counts[individual_id] += 1
+        updated += 1
+    if updated:
+        prototypes = torch.stack(
+            [F.normalize(sums[individual_id], p=2, dim=0) for individual_id in class_names]
+        ).cpu()
+        checkpoint = {
+            "prototypes": prototypes,
+            "class_names": class_names,
+            "prototype_counts": [counts[individual_id] for individual_id in class_names],
+            "gallery_version": 1,
+        }
+        tmp_path = gallery.with_suffix(".tmp.pt")
+        torch.save(checkpoint, tmp_path)
+        tmp_path.replace(gallery)
     return {"gallery_updates": updated, "gallery_skipped": skipped}

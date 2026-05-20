@@ -29,6 +29,7 @@ async def list_detections(
     date_to: str | None = Query(None, description="ISO date YYYY-MM-DD"),
     review_status: str | None = Query(None, description="unreviewed, verified, corrected, flagged"),
     category: str | None = None,
+    individual_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """List detections with optional filters."""
@@ -47,6 +48,13 @@ async def list_detections(
         query = query.where(Detection.image_id == image_id)
     if category is not None:
         query = query.where(Detection.category == category)
+    if individual_id is not None:
+        individual_detection_ids = (
+            select(Annotation.detection_id)
+            .where(Annotation.individual_id.ilike(f"%{individual_id}%"))
+            .distinct()
+        )
+        query = query.where(Detection.id.in_(individual_detection_ids))
     if camera_id is not None:
         query = query.where(Image.camera_id == camera_id)
     if collection_id is not None:
