@@ -292,7 +292,7 @@ export async function login(email: string, password: string): Promise<UserData> 
  * returns A Promise resolving to the newly created UserData.
  */
 export async function register(email: string, password: string, fullName: string, role: string): Promise<UserData> {
-    const res = await fetch(`${API_BASE}/auth/register`, {
+    const res = await apiFetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, full_name: fullName, role }),
@@ -359,7 +359,7 @@ export async function fetchReidInfo(): Promise<Record<string, unknown>> {
 }
 
 export async function fetchReidSuggestions(detectionId: number, topK = 5): Promise<ReidSuggestionResponse> {
-    const res = await fetch(`${API_BASE}/reid/detections/${detectionId}/suggestions?top_k=${topK}`);
+    const res = await apiFetch(`${API_BASE}/reid/detections/${detectionId}/suggestions?top_k=${topK}`);
     if (!res.ok) throw new Error('Failed to fetch re-ID suggestions');
     return res.json();
 }

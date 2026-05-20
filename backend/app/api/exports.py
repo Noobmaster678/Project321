@@ -23,6 +23,14 @@ from backend.app.utils.dependencies import get_current_user
 router = APIRouter(prefix="/exports", tags=["Exports"])
 
 
+def _individual_detection_filter(individual_id: str):
+    return Detection.id.in_(
+        select(Annotation.detection_id)
+        .where(Annotation.individual_id.ilike(f"%{individual_id}%"))
+        .distinct()
+    )
+
+
 @router.get("/quoll-detections")
 async def export_quoll_detections(
     min_confidence: float = 0.0,
@@ -51,9 +59,7 @@ async def export_quoll_detections(
     if camera_name:
         query = query.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
     if individual_id:
-        query = query.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+        query = query.where(_individual_detection_filter(individual_id))
 
     dets = (await db.execute(query)).scalars().all()
 
@@ -122,9 +128,7 @@ async def export_metadata(
     if camera_name:
         query = query.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
     if individual_id:
-        query = query.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+        query = query.where(_individual_detection_filter(individual_id))
     dets = (await db.execute(query)).scalars().all()
 
     rows = []

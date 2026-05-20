@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # --- Auth ---
-    SECRET_KEY: str = "change-me-in-production"
+    SECRET_KEY: str = "wildlife-platform-secret-change-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
     OPEN_REGISTRATION: bool = True
 

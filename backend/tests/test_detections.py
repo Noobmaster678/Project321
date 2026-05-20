@@ -2,6 +2,8 @@
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.conftest import auth_header
+
 
 @pytest.mark.asyncio
 async def test_list_detections_empty(client: AsyncClient):
@@ -30,6 +32,27 @@ async def test_filter_by_min_confidence(client: AsyncClient, sample_data):
     resp = await client.get("/api/detections/", params={"min_confidence": 0.8})
     data = resp.json()
     assert all(d["classification_confidence"] >= 0.8 for d in data["items"])
+
+
+@pytest.mark.asyncio
+async def test_filter_by_individual_id(client: AsyncClient, test_user, sample_data):
+    target_id = sample_data["detections"][0].id
+    other_id = sample_data["detections"][1].id
+    await client.post(
+        "/api/annotations/",
+        json={"detection_id": target_id, "individual_id": "02Q2"},
+        headers=auth_header(test_user),
+    )
+    await client.post(
+        "/api/annotations/",
+        json={"detection_id": other_id, "individual_id": "99Q9"},
+        headers=auth_header(test_user),
+    )
+
+    resp = await client.get("/api/detections/", params={"individual_id": "02Q2"})
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["id"] == target_id
 
 
 @pytest.mark.asyncio
