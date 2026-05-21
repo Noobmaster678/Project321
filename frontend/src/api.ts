@@ -391,7 +391,7 @@ export async function fetchReidInfo(): Promise<Record<string, unknown>> {
 }
 
 export async function fetchReidSuggestions(detectionId: number, topK = 5): Promise<ReidSuggestionResponse> {
-    const res = await fetch(`${API_BASE}/reid/detections/${detectionId}/suggestions?top_k=${topK}`);
+    const res = await apiFetch(`${API_BASE}/reid/detections/${detectionId}/suggestions?top_k=${topK}`);
     if (!res.ok) throw new Error('Failed to fetch re-ID suggestions');
     return res.json();
 }
@@ -614,7 +614,7 @@ export async function fetchReport(filters: ReportFilters = {}): Promise<ReportDa
     if (filters.date_to) sp.set('date_to', filters.date_to);
     if (filters.camera_name) sp.set('camera_name', filters.camera_name);
     if (filters.individual_id) sp.set('individual_id', filters.individual_id);
-    const res = await fetch(`${API_BASE}/reports/summary?${sp}`);
+    const res = await apiFetch(`${API_BASE}/reports/summary?${sp}`);
     if (!res.ok) throw new Error('Failed to fetch report');
     return res.json();
 }

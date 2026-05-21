@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse, Response
-from sqlalchemy import select, func, case, distinct
+from sqlalchemy import select, func, case, distinct, extract
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -378,20 +378,21 @@ async def get_dashboard_stats(
     # Analytics 1: monthly annotation accuracy trend
     acc_q = (
         select(
-            func.strftime("%Y-%m", Image.captured_at).label("month"),
+            extract("year", Image.captured_at).label("year"),
+            extract("month", Image.captured_at).label("month"),
             func.count(Annotation.id).label("total"),
             func.sum(case((Annotation.is_correct == True, 1), else_=0)).label("correct"),  # noqa: E712
         )
         .join(Detection, Annotation.detection_id == Detection.id)
         .join(Image, Detection.image_id == Image.id)
         .where(Image.captured_at.isnot(None))
-        .group_by(func.strftime("%Y-%m", Image.captured_at))
-        .order_by(func.strftime("%Y-%m", Image.captured_at))
+        .group_by("year", "month")
+        .order_by("year", "month")
     )
     acc_rows = (await db.execute(acc_q)).all()
     accuracy_trend = [
         {
-            "month": row.month,
+            "month": f"{int(row.year):04d}-{int(row.month):02d}",
             "accuracy": round((row.correct or 0) / row.total * 100, 1) if row.total > 0 else 0.0,
             "total": row.total,
         }
@@ -421,17 +422,18 @@ async def get_dashboard_stats(
     # Analytics 3: monthly detection activity
     activity_q = (
         select(
-            func.strftime("%Y-%m", Image.captured_at).label("month"),
+            extract("year", Image.captured_at).label("year"),
+            extract("month", Image.captured_at).label("month"),
             func.count(Detection.id).label("detections"),
         )
         .join(Detection, Detection.image_id == Image.id)
         .where(Image.captured_at.isnot(None))
-        .group_by(func.strftime("%Y-%m", Image.captured_at))
-        .order_by(func.strftime("%Y-%m", Image.captured_at))
+        .group_by("year", "month")
+        .order_by("year", "month")
     )
     activity_rows = (await db.execute(activity_q)).all()
     monthly_activity = [
-        {"month": row.month, "detections": row.detections}
+        {"month": f"{int(row.year):04d}-{int(row.month):02d}", "detections": row.detections}
         for row in activity_rows
     ]
 

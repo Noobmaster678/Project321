@@ -57,18 +57,19 @@ async def run_reid_backfill(
         quoll_sql_filter(),
     )
 
-    if mode == "refresh_auto":
+    q = select(Detection).where(base_filter).order_by(Detection.id).limit(limit)
+    dets = (await db.execute(q)).scalars().all()
+    candidate_ids = [det.id for det in dets]
+
+    if mode == "refresh_auto" and candidate_ids:
         res = await db.execute(
             delete(Annotation).where(
                 Annotation.annotator == MEGAD_ANNOTATOR,
-                Annotation.detection_id.in_(select(Detection.id).where(base_filter)),
+                Annotation.detection_id.in_(candidate_ids),
             )
         )
         stats["removed_auto"] = int(res.rowcount or 0)
         await db.flush()
-
-    q = select(Detection).where(base_filter).order_by(Detection.id).limit(limit)
-    dets = (await db.execute(q)).scalars().all()
 
     for det in dets:
         stats["candidates"] += 1

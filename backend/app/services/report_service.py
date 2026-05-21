@@ -38,6 +38,11 @@ async def generate_summary_report(
         img_filter = img_filter.where(func.date(Image.captured_at) <= date_to)
     if camera_name:
         img_filter = img_filter.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
+    individual_detection_ids = None
+    if individual_id:
+        individual_detection_ids = select(Annotation.detection_id).where(
+            Annotation.individual_id.ilike(f"%{individual_id}%")
+        )
 
     base_image_ids = img_filter.subquery()
     total_images = (await db.execute(select(func.count()).select_from(base_image_ids))).scalar() or 0
@@ -65,10 +70,8 @@ async def generate_summary_report(
         det_query = det_query.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
     if species_filter:
         det_query = det_query.where(Detection.species.ilike(f"%{species_filter}%"))
-    if individual_id:
-        det_query = det_query.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+    if individual_detection_ids is not None:
+        det_query = det_query.where(Detection.id.in_(individual_detection_ids))
 
     det_ids = det_query.subquery()
     det_count_q = select(func.count()).select_from(det_ids)
@@ -92,10 +95,8 @@ async def generate_summary_report(
         sp_q = sp_q.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
     if species_filter:
         sp_q = sp_q.where(Detection.species.ilike(f"%{species_filter}%"))
-    if individual_id:
-        sp_q = sp_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+    if individual_detection_ids is not None:
+        sp_q = sp_q.where(Detection.id.in_(individual_detection_ids))
     sp_q = sp_q.group_by(Detection.species).order_by(func.count(Detection.id).desc())
     species_rows = (await db.execute(sp_q)).all()
     species_distribution = [{"species": r[0], "count": r[1]} for r in species_rows]
@@ -120,10 +121,8 @@ async def generate_summary_report(
         conf_q = conf_q.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
     if species_filter:
         conf_q = conf_q.where(Detection.species.ilike(f"%{species_filter}%"))
-    if individual_id:
-        conf_q = conf_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+    if individual_detection_ids is not None:
+        conf_q = conf_q.where(Detection.id.in_(individual_detection_ids))
     mean_det_conf, mean_cls_conf = (await db.execute(conf_q)).one()
 
     # Camera counts
@@ -144,10 +143,8 @@ async def generate_summary_report(
         cam_q = cam_q.where(Camera.name == camera_name)
     if species_filter:
         cam_q = cam_q.where(Detection.species.ilike(f"%{species_filter}%"))
-    if individual_id:
-        cam_q = cam_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+    if individual_detection_ids is not None:
+        cam_q = cam_q.where(Detection.id.in_(individual_detection_ids))
     cam_q = cam_q.group_by(Camera.name).order_by(func.count(Detection.id).desc())
     cam_rows = (await db.execute(cam_q)).all()
     camera_counts = [{"camera": r[0], "detections": r[1]} for r in cam_rows]
@@ -170,10 +167,8 @@ async def generate_summary_report(
         hourly_q = hourly_q.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
     if species_filter:
         hourly_q = hourly_q.where(Detection.species.ilike(f"%{species_filter}%"))
-    if individual_id:
-        hourly_q = hourly_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+    if individual_detection_ids is not None:
+        hourly_q = hourly_q.where(Detection.id.in_(individual_detection_ids))
     hourly_q = hourly_q.group_by("hour").order_by("hour")
     hourly_rows = (await db.execute(hourly_q)).all()
     hourly_activity = [{"hour": int(r[0]), "detections": r[1]} for r in hourly_rows]
@@ -199,10 +194,8 @@ async def generate_summary_report(
         month_q = month_q.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
     if species_filter:
         month_q = month_q.where(Detection.species.ilike(f"%{species_filter}%"))
-    if individual_id:
-        month_q = month_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+    if individual_detection_ids is not None:
+        month_q = month_q.where(Detection.id.in_(individual_detection_ids))
     month_q = month_q.group_by("year", "month").order_by("year", "month")
     month_rows = (await db.execute(month_q)).all()
     monthly_activity = [
@@ -239,6 +232,8 @@ async def generate_summary_report(
         identified_q = identified_q.where(func.date(Image.captured_at) <= date_to)
     if camera_name:
         identified_q = identified_q.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
+    if individual_id:
+        identified_q = identified_q.where(Annotation.individual_id.ilike(f"%{individual_id}%"))
     identified_q = identified_q.order_by("year", "month")
     identified_rows = (await db.execute(identified_q)).all()
     by_month: dict[str, set[str]] = {}
@@ -286,10 +281,8 @@ async def generate_summary_report(
         recent_q = recent_q.where(Camera.name == camera_name)
     if species_filter:
         recent_q = recent_q.where(Detection.species.ilike(f"%{species_filter}%"))
-    if individual_id:
-        recent_q = recent_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+    if individual_detection_ids is not None:
+        recent_q = recent_q.where(Detection.id.in_(individual_detection_ids))
     recent_rows = (await db.execute(recent_q)).all()
     recent_sightings = [
         {
@@ -331,10 +324,8 @@ async def generate_summary_report(
             event_species_q = event_species_q.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
         if species_filter:
             event_species_q = event_species_q.where(Detection.species.ilike(f"%{species_filter}%"))
-        if individual_id:
-            event_species_q = event_species_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-                Annotation.individual_id.ilike(f"%{individual_id}%")
-            )
+        if individual_detection_ids is not None:
+            event_species_q = event_species_q.where(Detection.id.in_(individual_detection_ids))
         event_species_q = event_species_q.group_by(Detection.species).order_by(func.count(distinct(Image.event_id)).desc())
         event_rows = (await db.execute(event_species_q)).all()
         for row in event_rows:

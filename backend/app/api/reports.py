@@ -10,6 +10,7 @@ from backend.app.models.deployment import Deployment
 from backend.app.models.detection import Detection
 from backend.app.models.image import Image
 from backend.app.models.camera import Camera
+from backend.app.models.user import User
 from backend.app.schemas.schemas import ReportOut, RAIReport, RAIEntry
 from backend.app.utils.dependencies import get_current_user
 from backend.app.services.report_service import (
@@ -27,6 +28,7 @@ async def summary_report(
     date_to: date | None = Query(None),
     camera_name: str | None = Query(None),
     individual_id: str | None = Query(None),
+    _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Overall platform summary report with species distribution, hourly activity, camera counts."""
@@ -42,7 +44,11 @@ async def summary_report(
 
 
 @router.get("/batch/{job_id}")
-async def batch_report(job_id: int, db: AsyncSession = Depends(get_db)):
+async def batch_report(
+    job_id: int,
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Report for a specific batch processing job."""
     report = await generate_batch_report(db, job_id)
     if not report:
@@ -51,7 +57,10 @@ async def batch_report(job_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/rai", response_model=RAIReport)
-async def rai_report(db: AsyncSession = Depends(get_db)):
+async def rai_report(
+    _user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Compute Relative Abundance Index per species using independent events and trap-nights."""
     total_trap_nights = (await db.execute(select(func.sum(Deployment.trap_nights)))).scalar() or 0.0
     total_deployments = (await db.execute(select(func.count(Deployment.id)))).scalar() or 0

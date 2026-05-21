@@ -56,20 +56,20 @@ async def register(
         )
 
     total_users = (await db.execute(select(func.count(User.id)))).scalar() or 0
-    if not settings.OPEN_REGISTRATION and total_users > 0 and requester is None:
+    requester_is_admin = requester is not None and requester.role == "admin"
+    bootstrap_admin = total_users == 0 and payload.role == "admin"
+
+    if not settings.OPEN_REGISTRATION and total_users > 0 and not requester_is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Open registration is disabled",
         )
 
-    if payload.role == "admin":
-        bootstrap_admin = total_users == 0
-        requester_is_admin = requester is not None and requester.role == "admin"
-        if not bootstrap_admin and not requester_is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only admins can create admin accounts",
-            )
+    if payload.role in ("admin", "researcher") and not (requester_is_admin or bootstrap_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can create elevated accounts",
+        )
 
     # Create new user with hashed password
     new_user = User(
