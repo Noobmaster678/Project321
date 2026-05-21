@@ -2,6 +2,8 @@
 import pytest
 from httpx import AsyncClient
 
+from backend.app.models.annotation import Annotation
+
 
 @pytest.mark.asyncio
 async def test_list_detections_empty(client: AsyncClient):
@@ -56,3 +58,41 @@ async def test_get_detection_detail(client: AsyncClient, sample_data):
 async def test_get_detection_not_found(client: AsyncClient):
     resp = await client.get("/api/detections/9999")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_assign_individual_queue_excludes_already_assigned(client: AsyncClient, db, sample_data):
+    det = sample_data["detections"][0]
+    db.add(Annotation(detection_id=det.id, is_correct=True))
+    await db.commit()
+
+    queue_resp = await client.get("/api/detections/review-queue")
+    assert queue_resp.status_code == 200
+    assert queue_resp.json()["assign_individual"] == 1
+
+    list_resp = await client.get(
+        "/api/detections/",
+        params={"species": "quoll", "review_status": "verified", "needs_individual_id": True},
+    )
+    assert list_resp.status_code == 200
+    assert list_resp.json()["total"] == 1
+
+    db.add(Annotation(detection_id=det.id, is_correct=True, individual_id="02Q2"))
+    await db.commit()
+
+    queue_resp = await client.get("/api/detections/review-queue")
+    assert queue_resp.status_code == 200
+    assert queue_resp.json()["assign_individual"] == 0
+
+    list_resp = await client.get(
+        "/api/detections/",
+        params={"species": "quoll", "review_status": "verified", "needs_individual_id": True},
+    )
+    assert list_resp.status_code == 200
+    assert list_resp.json()["total"] == 0
+
+    assigned_resp = await client.get("/api/detections/", params={"individual_id": "02Q2"})
+    assert assigned_resp.status_code == 200
+    assigned = assigned_resp.json()
+    assert assigned["total"] == 1
+    assert assigned["items"][0]["id"] == det.id

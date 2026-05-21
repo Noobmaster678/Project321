@@ -126,16 +126,18 @@ async def delete_individual(
     ind = (
         await db.execute(select(Individual).where(Individual.individual_id == individual_id))
     ).scalar_one_or_none()
-    if not ind:
-        raise HTTPException(status_code=404, detail="Individual not found")
 
-    await db.execute(
+    annotation_result = await db.execute(
         sa_update(Annotation)
         .where(Annotation.individual_id == individual_id)
         .values(individual_id=None)
     )
-    await db.execute(
-        sa_delete(Sighting).where(Sighting.individual_id == ind.id)
-    )
+    if not ind:
+        if (annotation_result.rowcount or 0) == 0:
+            raise HTTPException(status_code=404, detail="Individual not found")
+        await db.flush()
+        return
+
+    await db.execute(sa_delete(Sighting).where(Sighting.individual_id == ind.id))
     await db.delete(ind)
     await db.flush()
