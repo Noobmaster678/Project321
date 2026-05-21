@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, useParams, useSearchParams, useNavigate, Navigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
@@ -2272,9 +2272,20 @@ function SpeciesImages() {
             setDetections([]);
         }
     }, [selected?.id]);
+    const selectedDetections = useMemo(
+        () => selected ? detections.filter((d) => d.image_id === selected.id) : [],
+        [detections, selected?.id],
+    );
 
     useEffect(() => {
         if (!selected) { setDetections([]); return; }
+        setDetections([]);
+        setFocusedDetId(null);
+        setAssignId('');
+        setAssignNotes('');
+        setAssignMsg(null);
+        setReidSuggestions(null);
+        setReidSuggestionsError(null);
         refreshSelectedDetail();
     }, [selected?.id]);
 
@@ -2297,9 +2308,9 @@ function SpeciesImages() {
             return;
         }
         // When an image opens, default focus to first detection if any.
-        if (detections.length === 1) setFocusedDetId(detections[0].id);
-        if (focusedDetId == null && detections.length > 0) setFocusedDetId(detections[0].id);
-    }, [selected?.id, detections.length]);
+        if (selectedDetections.length === 1) setFocusedDetId(selectedDetections[0].id);
+        if (focusedDetId == null && selectedDetections.length > 0) setFocusedDetId(selectedDetections[0].id);
+    }, [selected?.id, selectedDetections.length]);
 
     useEffect(() => {
         if (!isQuoll) return;
@@ -2339,12 +2350,12 @@ function SpeciesImages() {
 
     // Auto-fill the manual assign input with the current assignment when focus changes.
     useEffect(() => {
-        const f = detections.find((d) => d.id === focusedDetId);
+        const f = selectedDetections.find((d) => d.id === focusedDetId);
         const anns = (f?.annotations ?? [])
             .filter((a) => a.individual_id)
             .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''));
         setAssignId(anns.at(-1)?.individual_id ?? '');
-    }, [focusedDetId, detections]);
+    }, [focusedDetId, selectedDetections]);
 
     const sortedItems = images ? [...images.items].sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true, sensitivity: 'base' })) : [];
     const selectedIdx = selected ? sortedItems.findIndex((i) => i.id === selected.id) : -1;
@@ -2359,7 +2370,7 @@ function SpeciesImages() {
     });
 
     if (loading) return <LoadingState />;
-    const focused = focusedDetId != null ? detections.find((d) => d.id === focusedDetId) : null;
+    const focused = focusedDetId != null ? selectedDetections.find((d) => d.id === focusedDetId) : null;
     const currentAssigned = (() => {
         if (!focused?.annotations || focused.annotations.length === 0) return null;
         const withId = focused.annotations.filter((a) => a && a.individual_id);
@@ -2612,7 +2623,7 @@ function SpeciesImages() {
                                         }
                                     }}
                                 />
-                                {showBoxes && detections.map((det) => (
+                                {showBoxes && selectedDetections.map((det) => (
                                     <div
                                         key={det.id}
                                         className="detection-bbox-overlay"
@@ -2654,11 +2665,11 @@ function SpeciesImages() {
                                 {selected.has_animal === false && <span className="tag tag-muted">Empty</span>}
                                 {selected.camera_id && <span className="tag tag-info">Cam {selected.camera_id}</span>}
                             </div>
-                                    {detections.length > 0 && (
+                                    {selectedDetections.length > 0 && (
                                 <div style={{ marginBottom: '1rem' }}>
-                                    <div style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.4rem' }}>Detections ({detections.length})</div>
+                                    <div style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.4rem' }}>Detections ({selectedDetections.length})</div>
                                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-                                        {detections.map((det) => {
+                                        {selectedDetections.map((det) => {
                                             const detAssigned = (det.annotations ?? [])
                                                 .filter((a) => a.individual_id)
                                                 .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
