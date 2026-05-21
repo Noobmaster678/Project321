@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.db.session import get_db
 from backend.app.models.annotation import Annotation
 from backend.app.models.detection import Detection
-from backend.app.models.individual import Individual
 from backend.app.models.user import User
 from backend.app.schemas.schemas import AnnotationCreate, AnnotationUpdate, AnnotationOut
 from backend.app.services.reid_learning import resolve_reid_suggestions, incremental_update_from_detection
@@ -25,16 +24,6 @@ async def create_annotation(
     det = (await db.execute(select(Detection).where(Detection.id == payload.detection_id))).scalar_one_or_none()
     if not det:
         raise HTTPException(status_code=404, detail="Detection not found")
-
-    if payload.individual_id:
-        ind = (await db.execute(
-            select(Individual).where(Individual.individual_id == payload.individual_id)
-        )).scalar_one_or_none()
-        if not ind:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Individual '{payload.individual_id}' does not exist. Create the profile first.",
-            )
 
     ann = Annotation(
         detection_id=payload.detection_id,
@@ -89,19 +78,6 @@ async def update_annotation(
 
     before_individual = ann.individual_id
     updates = payload.model_dump(exclude_unset=True)
-    after_individual = updates.get("individual_id", before_individual)
-    if after_individual:
-        ind = (
-            await db.execute(
-                select(Individual).where(Individual.individual_id == after_individual)
-            )
-        ).scalar_one_or_none()
-        if not ind:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Individual '{after_individual}' does not exist. Create the profile first.",
-            )
-
     for field, value in updates.items():
         setattr(ann, field, value)
     ann.annotator = user.email
