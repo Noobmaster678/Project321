@@ -37,6 +37,13 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
         }
     }, []);
 
+    // Clear the session whenever apiFetch receives a 401 (expired / revoked JWT).
+    useEffect(() => {
+        const handler = () => setUser(null);
+        window.addEventListener('auth:expired', handler);
+        return () => window.removeEventListener('auth:expired', handler);
+    }, []);
+
     // Authenticates the user via the backend API and updates the local React state
     const login = async (email: string, password: string): Promise<void> => {
         const u = await apiLogin(email, password);

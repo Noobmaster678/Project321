@@ -107,14 +107,14 @@ async def update_annotation(
     ann.annotator = user.email
 
     await db.flush()
-    if "individual_id" in updates:
+    if "individual_id" in updates and ann.individual_id:
         await resolve_reid_suggestions(
             db,
             detection_id=ann.detection_id,
             chosen_individual_id=ann.individual_id,
             annotator=user.email,
         )
-        if ann.individual_id and ann.individual_id != before_individual:
+        if ann.individual_id != before_individual:
             await incremental_update_from_detection(
                 db,
                 detection_id=ann.detection_id,

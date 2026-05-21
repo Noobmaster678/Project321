@@ -43,6 +43,10 @@ async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
         ...init,
         headers: { ...authHeaders(), ...(init?.headers || {}) },
     });
+    if (res.status === 401) {
+        setToken(null);
+        window.dispatchEvent(new Event('auth:expired'));
+    }
     return res;
 }
 
@@ -133,6 +137,8 @@ export interface PaginatedResponse<T> {
 export interface IndividualData {
     individual_id: string;
     species: string;
+    profile_lead?: string | null;
+    notes?: string | null;
     first_seen: string | null;
     last_seen: string | null;
     total_sightings: number;
@@ -276,7 +282,10 @@ export async function login(email: string, password: string): Promise<UserData> 
     form.set('username', email);
     form.set('password', password);
     const res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', body: form });
-    if (!res.ok) throw new Error('Invalid credentials');
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { detail?: string }).detail || 'Invalid credentials');
+    }
     const data = await res.json();
     setToken(data.access_token);
     return fetchMe();
@@ -343,6 +352,29 @@ export async function fetchIndividuals(): Promise<IndividualData[]> {
     return res.json();
 }
 
+export async function fetchIndividualProfile(individualId: string): Promise<IndividualData | null> {
+    const res = await fetch(`${API_BASE}/individuals/${encodeURIComponent(individualId)}`);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error('Failed to fetch individual profile');
+    return res.json();
+}
+
+export async function updateIndividualProfile(
+    individualId: string,
+    payload: { profile_lead?: string; notes?: string },
+): Promise<IndividualData> {
+    const res = await apiFetch(`${API_BASE}/individuals/${encodeURIComponent(individualId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { detail?: string }).detail || 'Failed to update profile');
+    }
+    return res.json();
+}
+
 export async function fetchIndividualGallery(individualId: string): Promise<IndividualGalleryResponse> {
     const res = await fetch(
         `${API_BASE}/stats/individuals/${encodeURIComponent(individualId)}/gallery`,
@@ -364,12 +396,24 @@ export async function fetchReidSuggestions(detectionId: number, topK = 5): Promi
     return res.json();
 }
 
+export async function deleteIndividual(individualId: string): Promise<void> {
+    const res = await apiFetch(`${API_BASE}/individuals/${encodeURIComponent(individualId)}`, {
+        method: 'DELETE',
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { detail?: string }).detail || 'Failed to delete individual');
+    }
+}
+
 export async function createIndividual(payload: {
     individual_id: string;
     species: string;
     name?: string;
-    ref_left_detection_id: number;
-    ref_right_detection_id: number;
+    notes?: string;
+    profile_lead?: string;
+    ref_left_detection_id?: number;
+    ref_right_detection_id?: number;
 }): Promise<IndividualData> {
     const res = await apiFetch(`${API_BASE}/individuals/`, {
         method: 'POST',
@@ -536,6 +580,28 @@ export async function createAnnotation(payload: {
 export async function fetchAnnotations(detectionId: number): Promise<AnnotationData[]> {
     const res = await fetch(`${API_BASE}/annotations/by-detection/${detectionId}`);
     if (!res.ok) throw new Error('Failed to fetch annotations');
+    return res.json();
+}
+
+export async function updateAnnotation(
+    annotationId: number,
+    payload: {
+        individual_id?: string | null;
+        corrected_species?: string | null;
+        is_correct?: boolean | null;
+        notes?: string | null;
+        flag_for_retraining?: boolean;
+    },
+): Promise<AnnotationData> {
+    const res = await apiFetch(`${API_BASE}/annotations/${annotationId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { detail?: string }).detail || 'Failed to update annotation');
+    }
     return res.json();
 }
 

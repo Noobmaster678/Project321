@@ -1,6 +1,6 @@
 """Dashboard statistics API endpoints."""
 from fastapi import APIRouter, Depends
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_db
@@ -31,7 +31,24 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
     quoll_detections = (await db.execute(
         select(func.count(Detection.id)).where(Detection.species.ilike("%quoll%"))
     )).scalar() or 0
-    total_individuals = (await db.execute(select(func.count(Individual.id)))).scalar() or 0
+    # Count distinct individuals from both the individuals table AND annotation-based IDs,
+    # since detections annotated with an individual_id in review do not always have a
+    # corresponding row in the individuals table.
+    _ind_table_q = select(Individual.individual_id.label("iid"))
+    _ann_ids_q = (
+        select(Annotation.individual_id.label("iid"))
+        .join(Detection, Annotation.detection_id == Detection.id)
+        .where(
+            Annotation.individual_id.isnot(None),
+            Annotation.individual_id != "",
+            Detection.species.isnot(None),
+            quoll_sql_filter(),
+        )
+    )
+    _combined = union(_ind_table_q, _ann_ids_q).subquery()
+    total_individuals = (
+        await db.execute(select(func.count()).select_from(_combined))
+    ).scalar() or 0
     total_cameras = (await db.execute(select(func.count(Camera.id)))).scalar() or 0
     total_collections = (await db.execute(select(func.count(Collection.id)))).scalar() or 0
 
@@ -123,6 +140,8 @@ async def individual_stats(db: AsyncSession = Depends(get_db)):
         by_key[ind.individual_id] = {
             "individual_id": ind.individual_id,
             "species": ind.species,
+            "profile_lead": ind.profile_lead,
+            "notes": ind.notes,
             "first_seen": ind.first_seen,
             "last_seen": ind.last_seen,
             "total_sightings": ind.total_sightings or 0,
@@ -163,6 +182,8 @@ async def individual_stats(db: AsyncSession = Depends(get_db)):
             by_key[iid] = {
                 "individual_id": iid,
                 "species": sp or "Spotted-tailed Quoll",
+                "profile_lead": None,
+                "notes": None,
                 "first_seen": first,
                 "last_seen": last,
                 "total_sightings": ann_cnt,

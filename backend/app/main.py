@@ -37,6 +37,10 @@ async def _sqlite_ensure_columns(conn) -> None:
             await conn.exec_driver_sql("ALTER TABLE individuals ADD COLUMN ref_left_detection_id INTEGER")
         if "ref_right_detection_id" not in existing:
             await conn.exec_driver_sql("ALTER TABLE individuals ADD COLUMN ref_right_detection_id INTEGER")
+        if "profile_lead" not in existing:
+            await conn.exec_driver_sql("ALTER TABLE individuals ADD COLUMN profile_lead TEXT")
+        if "notes" not in existing:
+            await conn.exec_driver_sql("ALTER TABLE individuals ADD COLUMN notes TEXT")
     except Exception:
         # If table doesn't exist yet, create_all below will handle it.
         return

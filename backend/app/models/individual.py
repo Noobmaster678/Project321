@@ -1,5 +1,5 @@
 """Individual quoll model — a specific identified animal."""
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from backend.app.db.base import Base
 
@@ -11,6 +11,8 @@ class Individual(Base):
     individual_id = Column(String, unique=True, nullable=False, index=True)  # e.g., "02Q2", "07Q2"
     species = Column(String, nullable=False, default="Spotted-tailed Quoll")
     name = Column(String, nullable=True)  # optional nickname
+    profile_lead = Column(Text, nullable=True)  # hero/overview summary (admin-editable)
+    notes = Column(Text, nullable=True)  # ecologist notes on profile Notes tab
     first_seen = Column(DateTime, nullable=True)
     last_seen = Column(DateTime, nullable=True)
     total_sightings = Column(Integer, default=0)

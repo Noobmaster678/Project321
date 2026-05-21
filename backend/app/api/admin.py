@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse, Response
-from sqlalchemy import select, func
+from sqlalchemy import select, func, case, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -343,26 +343,109 @@ async def get_dashboard_stats(
     _admin: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Combined stats + placeholder cards for the admin dashboard UI (mirrors AdminPage.tsx)."""
+    """Combined stats + real DB data for the admin dashboard UI."""
     total_images = (await db.execute(select(func.count(Image.id)))).scalar() or 0
     total_users = (await db.execute(select(func.count(User.id)))).scalar() or 0
     pending_jobs = (await db.execute(
         select(func.count(ProcessingJob.id)).where(ProcessingJob.status.in_(["queued", "processing"]))
     )).scalar() or 0
+    total_detections = (await db.execute(select(func.count(Detection.id)))).scalar() or 0
+
+    # Most recent quoll detections that have a crop image saved to storage
+    recent_q = (
+        select(Detection.id, Detection.crop_path, Detection.classification_confidence, Detection.review_status)
+        .join(Image, Detection.image_id == Image.id)
+        .where(
+            Detection.species.ilike("%quoll%"),
+            Detection.crop_path.isnot(None),
+        )
+        .order_by(Image.captured_at.desc().nullslast(), Detection.id.desc())
+        .limit(6)
+    )
+    recent_rows = (await db.execute(recent_q)).all()
+    recent_sightings = []
+    for det_id, crop_path, conf, review_status in recent_rows:
+        conf_label = f"{round(conf * 100)}% Confidence" if conf is not None else "Detected"
+        status_label = (review_status or "pending").replace("_", " ").title()
+        img_url = "/storage/" + crop_path.replace("\\", "/")
+        recent_sightings.append({
+            "id": f"#D-{det_id}",
+            "tag": conf_label,
+            "status": status_label,
+            "img": img_url,
+        })
+
+    # Analytics 1: monthly annotation accuracy trend
+    acc_q = (
+        select(
+            func.strftime("%Y-%m", Image.captured_at).label("month"),
+            func.count(Annotation.id).label("total"),
+            func.sum(case((Annotation.is_correct == True, 1), else_=0)).label("correct"),  # noqa: E712
+        )
+        .join(Detection, Annotation.detection_id == Detection.id)
+        .join(Image, Detection.image_id == Image.id)
+        .where(Image.captured_at.isnot(None))
+        .group_by(func.strftime("%Y-%m", Image.captured_at))
+        .order_by(func.strftime("%Y-%m", Image.captured_at))
+    )
+    acc_rows = (await db.execute(acc_q)).all()
+    accuracy_trend = [
+        {
+            "month": row.month,
+            "accuracy": round((row.correct or 0) / row.total * 100, 1) if row.total > 0 else 0.0,
+            "total": row.total,
+        }
+        for row in acc_rows
+    ]
+
+    # Analytics 2: identification breakdown — confirmed / corrected / unverified
+    confirmed = (await db.execute(
+        select(func.count(Annotation.id)).where(Annotation.is_correct == True)  # noqa: E712
+    )).scalar() or 0
+    corrected_count = (await db.execute(
+        select(func.count(Annotation.id)).where(
+            Annotation.is_correct == False,  # noqa: E712
+            Annotation.corrected_species.isnot(None),
+        )
+    )).scalar() or 0
+    annotated_det_count = (await db.execute(
+        select(func.count(distinct(Annotation.detection_id)))
+    )).scalar() or 0
+    unverified = max(0, total_detections - annotated_det_count)
+    identification_breakdown = [
+        {"name": "Confirmed", "value": confirmed},
+        {"name": "Corrected", "value": corrected_count},
+        {"name": "Unverified", "value": unverified},
+    ]
+
+    # Analytics 3: monthly detection activity
+    activity_q = (
+        select(
+            func.strftime("%Y-%m", Image.captured_at).label("month"),
+            func.count(Detection.id).label("detections"),
+        )
+        .join(Detection, Detection.image_id == Image.id)
+        .where(Image.captured_at.isnot(None))
+        .group_by(func.strftime("%Y-%m", Image.captured_at))
+        .order_by(func.strftime("%Y-%m", Image.captured_at))
+    )
+    activity_rows = (await db.execute(activity_q)).all()
+    monthly_activity = [
+        {"month": row.month, "detections": row.detections}
+        for row in activity_rows
+    ]
 
     return {
         "stats": [
             {"label": "Total images", "value": f"{total_images:,}", "color": "green"},
             {"label": "Total users", "value": f"{total_users:,}", "color": "green"},
             {"label": "Jobs in queue / processing", "value": f"{pending_jobs:,}", "color": "yellow"},
-            {"label": "Unresolved issues (placeholder)", "value": "—", "color": "red"},
+            {"label": "Total detections", "value": f"{total_detections:,}", "color": "green"},
         ],
-        "recent_sightings": [
-            {"id": "#S-1042", "tag": "98% Confidence", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+1"},
-            {"id": "#S-902", "tag": "Conflict", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+2"},
-            {"id": "#S-1209", "tag": "New Individual", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+3"},
-            {"id": "#S-3008", "tag": "No Animal", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+4"},
-            {"id": "#S-523", "tag": "Vulnerable", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+5"},
-            {"id": "#S-1337", "tag": "Verified", "status": "Review", "img": "https://via.placeholder.com/400x300?text=Sighting+6"},
-        ],
+        "recent_sightings": recent_sightings,
+        "analytics": {
+            "accuracy_trend": accuracy_trend,
+            "identification_breakdown": identification_breakdown,
+            "monthly_activity": monthly_activity,
+        },
     }

@@ -1,16 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { BrowserRouter, Routes, Route, Link, useLocation, useParams, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, useLocation, useParams, useSearchParams, useNavigate, Navigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import L from 'leaflet';
 import { AuthProvider, useAuth } from './auth';
 import {
-    fetchStats, fetchImages, fetchIndividuals, fetchCollectionStats, fetchCameraStats,
+    fetchStats, fetchImages, fetchIndividuals, fetchIndividualProfile, updateIndividualProfile,
+    fetchCollectionStats, fetchCameraStats,
     fetchSpeciesCounts, fetchReport, fetchDetectionDetail, fetchAnnotations, fetchDetections,
-    createAnnotation, uploadBatch, fetchJobStatus, fetchUsers, changeUserRole,
+    createAnnotation, updateAnnotation, uploadBatch, fetchJobStatus, fetchUsers, changeUserRole,
     fetchSystemMetrics, register, getExportUrl, getQuollExportUrl, getMetadataExportUrl, fetchImagesBySpecies, fetchImageDetail, getToken,
     storageUrl, createMissedDetection, fetchReviewQueue, fetchIndividualGallery, fetchReidInfo, fetchReidSuggestions, createIndividual,
-    fetchIndividualTimeline,
+    deleteIndividual, fetchIndividualTimeline,
     type DashboardStats, type ImageData, type IndividualData, type CollectionStat,
     type CameraStat, type SpeciesCount, type PaginatedResponse, type ReportData,
     type DetectionDetail, type AnnotationData, type JobStatus, type UserData, type Detection,
@@ -128,6 +129,7 @@ function RequireAuth({ children, role }: { children: React.ReactNode; role?: str
 function HomeHeader() {
     const loc = useLocation();
     const { user, logout } = useAuth();
+    const [userMenuOpen, setUserMenuOpen] = useState(false);
     const navItems = [
         { path: '/', label: 'Home' },
         { path: '/upload', label: 'Upload' },
@@ -161,17 +163,46 @@ function HomeHeader() {
                 <button type="button" className="nav-icon-btn" aria-label="Notifications">🔔</button>
                 <Link to="/help" className="nav-icon-btn" aria-label="Help">❓</Link>
                 {user ? (
-                    <button
-                        type="button"
-                        className="nav-icon-btn"
-                        onClick={logout}
-                        aria-label="User"
-                        title={user.email}
-                    >
-                        👤
-                    </button>
+                    <div style={{ position: 'relative' }}>
+                        <button
+                            type="button"
+                            className="nav-icon-btn"
+                            onClick={() => setUserMenuOpen((o) => !o)}
+                            aria-label="User menu"
+                            title={user.email}
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                        >
+                            👤 <span style={{ fontSize: '0.8rem', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.full_name ?? user.email.split('@')[0]}</span>
+                        </button>
+                        {userMenuOpen && (
+                            <>
+                                <div
+                                    style={{ position: 'fixed', inset: 0, zIndex: 199 }}
+                                    onClick={() => setUserMenuOpen(false)}
+                                />
+                                <div style={{
+                                    position: 'absolute', right: 0, top: 'calc(100% + 6px)',
+                                    background: 'var(--card-bg)', border: '1px solid var(--border)',
+                                    borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                                    minWidth: 180, zIndex: 200, overflow: 'hidden',
+                                }}>
+                                    <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)' }}>
+                                        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)' }}>{user.full_name ?? user.email}</div>
+                                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'capitalize', marginTop: 2 }}>{user.role}</div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        style={{ width: '100%', textAlign: 'left', padding: '0.6rem 1rem', background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.875rem', color: '#e63946', fontWeight: 600 }}
+                                        onClick={() => { logout(); setUserMenuOpen(false); }}
+                                    >
+                                        Sign out
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
                 ) : (
-                    <Link to="/login" className="nav-icon-btn" aria-label="Sign in">👤</Link>
+                    <Link to="/login" className="nav-icon-btn" aria-label="Sign in">👤 Sign in</Link>
                 )}
             </div>
         </header>
@@ -278,7 +309,7 @@ function PendingReviewPage() {
                 setFilterImages(res);
             } else if (cat === 'assign-individual') {
                 const res = await fetchDetections({ species: 'quoll', review_status: 'verified', per_page: 50, page, camera_id: cameraFilter });
-                setFilterDetections(res.items.filter((d: any) => !d.individual_id));
+                setFilterDetections(res.items.filter((d: any) => !(d.annotations ?? []).some((a: any) => a.individual_id)));
             }
         } catch { }
         setFilterLoading(false);
@@ -743,6 +774,8 @@ function Dashboard() {
                                     <strong>{c.name}</strong><br />
                                     Images: {c.image_count} · Detections: {c.detection_count}
                                     {c.last_upload && <><br />Last: {new Date(c.last_upload).toLocaleDateString()}</>}
+                                    <br />
+                                    <Link to={`/images?camera=${c.id}`} style={{ display: 'inline-block', marginTop: 6, color: 'var(--primary)', fontWeight: 600, fontSize: '0.85rem' }}>View Images →</Link>
                                 </Popup>
                             </Marker>
                         ))}
@@ -834,13 +867,15 @@ function Dashboard() {
    IMAGE BROWSER
    ============================================================ */
 function ImageBrowser() {
+    const [searchParams] = useSearchParams();
+    const initialCamera = searchParams.get('camera');
     const [images, setImages] = useState<PaginatedResponse<ImageData> | null>(null);
     const [cameras, setCameras] = useState<CameraStat[]>([]);
     const [page, setPage] = useState(1);
     const [filterProcessed, setFilterProcessed] = useState('all');
     const [filterAnimal, setFilterAnimal] = useState('all');
     const [filterSpecies, setFilterSpecies] = useState('all');
-    const [cameraIdFilter, setCameraIdFilter] = useState<number | null>(null);
+    const [cameraIdFilter, setCameraIdFilter] = useState<number | null>(initialCamera ? Number(initialCamera) : null);
     const [searchText, setSearchText] = useState('');
     const [folderFilter, setFolderFilter] = useState('all');
     const [groupByCameraFolder, setGroupByCameraFolder] = useState(true);
@@ -2302,6 +2337,15 @@ function SpeciesImages() {
             .finally(() => setReidSuggestionsLoading(false));
     }, [isQuoll, focusedDetId]);
 
+    // Auto-fill the manual assign input with the current assignment when focus changes.
+    useEffect(() => {
+        const f = detections.find((d) => d.id === focusedDetId);
+        const anns = (f?.annotations ?? [])
+            .filter((a) => a.individual_id)
+            .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''));
+        setAssignId(anns.at(-1)?.individual_id ?? '');
+    }, [focusedDetId, detections]);
+
     const sortedItems = images ? [...images.items].sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true, sensitivity: 'base' })) : [];
     const selectedIdx = selected ? sortedItems.findIndex((i) => i.id === selected.id) : -1;
     const goPrev = () => { if (selectedIdx > 0) setSelected(sortedItems[selectedIdx - 1]); };
@@ -2325,6 +2369,11 @@ function SpeciesImages() {
     })();
     const assignFocusedIndividual = async (targetId: string, notes?: string) => {
         if (!focused) return;
+        if (currentAssigned && currentAssigned !== targetId.trim()) {
+            if (!window.confirm(
+                `Detection #${focused.id} is already assigned to "${currentAssigned}".\nReassign to "${targetId.trim()}"?`
+            )) return;
+        }
         setSavingAssign(true);
         setAssignMsg(null);
         try {
@@ -2340,6 +2389,27 @@ function SpeciesImages() {
             await refreshSelectedDetail();
         } catch (e: any) {
             setAssignMsg(e?.message || 'Failed to assign');
+        }
+        setSavingAssign(false);
+    };
+
+    const unassignFocusedIndividual = async () => {
+        if (!focused || !currentAssigned) return;
+        const latestAnn = (focused.annotations ?? [])
+            .filter((a) => a.individual_id)
+            .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
+            .at(-1);
+        if (!latestAnn) return;
+        if (!window.confirm(`Remove assignment "${currentAssigned}" from detection #${focused.id}?`)) return;
+        setSavingAssign(true);
+        setAssignMsg(null);
+        try {
+            await updateAnnotation(latestAnn.id, { individual_id: null });
+            setAssignMsg(`Unassigned detection #${focused.id}`);
+            setAssignId('');
+            await refreshSelectedDetail();
+        } catch (e: any) {
+            setAssignMsg(e?.message || 'Failed to unassign');
         }
         setSavingAssign(false);
     };
@@ -2477,6 +2547,9 @@ function SpeciesImages() {
                                 disabled={bulkAssigning || !bulkAssignId.trim() || !user}
                                 onClick={async () => {
                                     if (!bulkAssignId.trim()) return;
+                                    if (!window.confirm(
+                                        `Assign ${selectedIds.size} image(s) to "${bulkAssignId.trim()}"?\nAlready-assigned detections will also be reassigned.`
+                                    )) return;
                                     setBulkAssigning(true);
                                     setBulkAssignMsg(null);
                                     let assigned = 0;
@@ -2581,20 +2654,27 @@ function SpeciesImages() {
                                 {selected.has_animal === false && <span className="tag tag-muted">Empty</span>}
                                 {selected.camera_id && <span className="tag tag-info">Cam {selected.camera_id}</span>}
                             </div>
-                            {detections.length > 0 && (
+                                    {detections.length > 0 && (
                                 <div style={{ marginBottom: '1rem' }}>
                                     <div style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.4rem' }}>Detections ({detections.length})</div>
                                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-                                        {detections.map((det) => (
-                                            <button
-                                                key={det.id}
-                                                className={det.id === focusedDetId ? 'tag tag-info' : 'tag tag-primary'}
-                                                style={{ fontSize: '0.7rem', border: 0, cursor: 'pointer' }}
-                                                onClick={() => setFocusedDetId(det.id)}
-                                            >
-                                                #{det.id} {det.species || 'unknown'} — {det.classification_confidence != null ? (det.classification_confidence * 100).toFixed(1) + '%' : 'N/A'}
-                                            </button>
-                                        ))}
+                                        {detections.map((det) => {
+                                            const detAssigned = (det.annotations ?? [])
+                                                .filter((a) => a.individual_id)
+                                                .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
+                                                .at(-1)?.individual_id ?? null;
+                                            return (
+                                                <button
+                                                    key={det.id}
+                                                    className={det.id === focusedDetId ? 'tag tag-info' : 'tag tag-primary'}
+                                                    style={{ fontSize: '0.7rem', border: 0, cursor: 'pointer' }}
+                                                    onClick={() => setFocusedDetId(det.id)}
+                                                >
+                                                    #{det.id} {det.species || 'unknown'} — {det.classification_confidence != null ? (det.classification_confidence * 100).toFixed(1) + '%' : 'N/A'}
+                                                    {detAssigned ? ` · ${detAssigned}` : ' · unassigned'}
+                                                </button>
+                                            );
+                                        })}
                                     </div>
                                 </div>
                             )}
@@ -2614,7 +2694,21 @@ function SpeciesImages() {
                                         {focused && (
                                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center', marginBottom: '0.75rem' }}>
                                                 <span className="tag tag-primary">{focused.species || 'unknown'}</span>
-                                                {currentAssigned ? <span className="tag tag-info">Assigned: {currentAssigned}</span> : <span className="tag tag-muted">Unassigned</span>}
+                                                {currentAssigned ? (
+                                                    <>
+                                                        <span className="tag tag-info">Assigned: {currentAssigned}</span>
+                                                        <button
+                                                            className="btn btn-outline"
+                                                            style={{ fontSize: '0.72rem', padding: '2px 10px', color: '#e63946', borderColor: '#e63946' }}
+                                                            disabled={savingAssign}
+                                                            onClick={unassignFocusedIndividual}
+                                                        >
+                                                            Unassign
+                                                        </button>
+                                                    </>
+                                                ) : (
+                                                    <span className="tag tag-muted">Unassigned</span>
+                                                )}
                                             </div>
                                         )}
                                         <div style={{ marginBottom: '0.85rem' }}>
@@ -2627,27 +2721,31 @@ function SpeciesImages() {
                                                 <div className="tag tag-muted">No suggested individuals for this detection yet.</div>
                                             ) : (
                                                 <div style={{ display: 'grid', gap: '0.45rem' }}>
-                                                    {reidSuggestions.suggestions.map((s) => (
-                                                        <button
-                                                            key={`${focusedDetId}-${s.rank}-${s.individual_id}`}
-                                                            className="btn btn-outline"
-                                                            disabled={!focused || savingAssign}
-                                                            onClick={() => assignFocusedIndividual(s.individual_id, `AI suggestion rank ${s.rank}`)}
-                                                            style={{
-                                                                textAlign: 'left',
-                                                                display: 'flex',
-                                                                justifyContent: 'space-between',
-                                                                alignItems: 'center',
-                                                                gap: '0.75rem',
-                                                            }}
-                                                        >
-                                                            <span>#{s.rank} {s.individual_id}</span>
-                                                            <span style={{ fontSize: '0.8rem' }}>
-                                                                sim {(s.similarity * 100).toFixed(1)}% · conf {(s.confidence * 100).toFixed(1)}%
-                                                                {s.accepted_by_gate ? ' · gate pass' : ''}
-                                                            </span>
-                                                        </button>
-                                                    ))}
+                                                    {reidSuggestions.suggestions.map((s) => {
+                                                        const isCurrent = s.individual_id === currentAssigned;
+                                                        return (
+                                                            <button
+                                                                key={`${focusedDetId}-${s.rank}-${s.individual_id}`}
+                                                                className={isCurrent ? 'btn btn-primary' : 'btn btn-outline'}
+                                                                disabled={!focused || savingAssign}
+                                                                onClick={() => assignFocusedIndividual(s.individual_id, `AI suggestion rank ${s.rank}`)}
+                                                                style={{
+                                                                    textAlign: 'left',
+                                                                    display: 'flex',
+                                                                    justifyContent: 'space-between',
+                                                                    alignItems: 'center',
+                                                                    gap: '0.75rem',
+                                                                    ...(isCurrent ? {} : {}),
+                                                                }}
+                                                            >
+                                                                <span>#{s.rank} {s.individual_id}{isCurrent ? ' (current)' : ''}</span>
+                                                                <span style={{ fontSize: '0.8rem' }}>
+                                                                    sim {(s.similarity * 100).toFixed(1)}% · conf {(s.confidence * 100).toFixed(1)}%
+                                                                    {s.accepted_by_gate ? ' · gate pass' : ''}
+                                                                </span>
+                                                            </button>
+                                                        );
+                                                    })}
                                                 </div>
                                             )}
                                         </div>
@@ -2866,12 +2964,32 @@ function QuollIndividualCardLink({ speciesKey, ind }: { speciesKey: string; ind:
 function SpeciesByIndividual() {
     const { speciesKey } = useParams();
     const decoded = speciesKey ? decodeURIComponent(speciesKey).replace(/-/g, ' ') : '';
+    const { user } = useAuth();
+    const navigate = useNavigate();
+    const canCreate = user?.role === 'admin' || user?.role === 'researcher';
+    const isAdmin = user?.role === 'admin';
 
     const [individuals, setIndividuals] = useState<IndividualData[]>([]);
     const [loading, setLoading] = useState(true);
     const [reidRuntime, setReidRuntime] = useState<Record<string, unknown> | null>(null);
 
     const [searchTerm, setSearchTerm] = useState("");
+
+    /* --- Create-profile modal state --- */
+    const [showCreateModal, setShowCreateModal] = useState(false);
+    const [createForm, setCreateForm] = useState({
+        individual_id: '',
+        species: 'Spotted-tailed Quoll',
+        name: '',
+        notes: '',
+        profile_lead: '',
+    });
+    const [createFiles, setCreateFiles] = useState<File[]>([]);
+    const [creating, setCreating] = useState(false);
+    const [createError, setCreateError] = useState<string | null>(null);
+    const [createSuccess, setCreateSuccess] = useState<string | null>(null);
+    const createFileRef = useRef<HTMLInputElement>(null);
+    const createFolderRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         fetchIndividuals()
@@ -2897,6 +3015,69 @@ function SpeciesByIndividual() {
         );
     });
 
+    const resetCreateForm = () => {
+        setCreateForm({ individual_id: '', species: 'Spotted-tailed Quoll', name: '', notes: '', profile_lead: '' });
+        setCreateFiles([]);
+        setCreateError(null);
+        setCreateSuccess(null);
+    };
+
+    const openCreateModal = () => {
+        resetCreateForm();
+        setShowCreateModal(true);
+    };
+
+    const handleCreateSubmit = async () => {
+        if (!createForm.individual_id.trim()) {
+            setCreateError('Individual ID is required (e.g. 02Q2)');
+            return;
+        }
+        setCreating(true);
+        setCreateError(null);
+        setCreateSuccess(null);
+        try {
+            const newInd = await createIndividual({
+                individual_id: createForm.individual_id.trim(),
+                species: createForm.species || 'Spotted-tailed Quoll',
+                name: createForm.name.trim() || undefined,
+                notes: createForm.notes.trim() || undefined,
+                profile_lead: createForm.profile_lead.trim() || undefined,
+            });
+
+            /* If images were selected, upload them as a batch linked to this individual */
+            if (createFiles.length > 0) {
+                try {
+                    await uploadBatch(createFiles, `${newInd.individual_id}_profile_upload`);
+                } catch (uploadErr: any) {
+                    /* Profile created but upload partially failed — still navigate */
+                    console.warn('Image upload error:', uploadErr);
+                }
+            }
+
+            setCreateSuccess(`Profile "${newInd.individual_id}" created successfully!`);
+
+            /* Refresh the list */
+            const updatedList = await fetchIndividuals();
+            setIndividuals(updatedList.filter((i) => individualMatchesSpeciesPage(i, decoded)));
+
+            /* After a short delay, navigate to the new profile */
+            setTimeout(() => {
+                setShowCreateModal(false);
+                navigate(`/individuals/species/${speciesKey}/individuals/${encodeURIComponent(newInd.individual_id)}`);
+            }, 1200);
+        } catch (e: any) {
+            setCreateError(e?.message || 'Failed to create profile');
+        } finally {
+            setCreating(false);
+        }
+    };
+
+    const handleCreateFilesChange = (files: FileList | null) => {
+        if (!files) return;
+        const arr = Array.from(files).filter((f) => /\.(jpe?g|png)$/i.test(f.name));
+        setCreateFiles(arr);
+    };
+
     if (loading) return <LoadingState />;
 
     return (
@@ -2910,9 +3091,21 @@ function SpeciesByIndividual() {
                 <span className="sep">›</span>
                 <span>Individuals</span>
             </nav>
-            <div className="page-header">
-                <h2 style={{ color: WT_GREEN }}>Individuals — {decoded}</h2>
-                <p className="text-muted">Select a quoll to open its profile (WildlifeTracker-style).</p>
+            <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
+                <div>
+                    <h2 style={{ color: WT_GREEN }}>Individuals — {decoded}</h2>
+                    <p className="text-muted">Select a quoll to open its profile (WildlifeTracker-style).</p>
+                </div>
+                {canCreate && (
+                    <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={openCreateModal}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', whiteSpace: 'nowrap' }}
+                    >
+                        <span style={{ fontSize: '1.1rem' }}>＋</span> Create New Profile
+                    </button>
+                )}
             </div>
             <div className="individual-search-bar" style={{ marginBottom: '1.5rem' }}>
                 <input
@@ -2955,12 +3148,275 @@ function SpeciesByIndividual() {
                     <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
                         CSV import of individuals/sightings is supported separately if you use that workflow.
                     </p>
+                    {canCreate && (
+                        <button type="button" className="btn btn-primary" onClick={openCreateModal} style={{ marginTop: '0.75rem' }}>
+                            <span style={{ marginRight: '0.4rem' }}>＋</span> Create New Profile
+                        </button>
+                    )}
                 </div>
             ) : (
                 <div className="wt-quoll-card-grid">
                     {filteredIndividuals.map((ind) => (
-                        <QuollIndividualCardLink key={ind.individual_id} speciesKey={speciesKey!} ind={ind} />
+                        <div key={ind.individual_id} style={{ position: 'relative' }}>
+                            <QuollIndividualCardLink speciesKey={speciesKey!} ind={ind} />
+                            {isAdmin && (
+                                <button
+                                    type="button"
+                                    style={{
+                                        position: 'absolute', top: 8, right: 8,
+                                        background: 'rgba(255,255,255,0.92)', border: '1px solid #e63946',
+                                        color: '#e63946', borderRadius: 6, fontSize: '0.7rem',
+                                        padding: '2px 8px', cursor: 'pointer', fontWeight: 600, zIndex: 2,
+                                    }}
+                                    onClick={async (e) => {
+                                        e.preventDefault();
+                                        if (!window.confirm(`Delete individual "${ind.individual_id}"?\nThis removes the profile and all sightings. Annotation assignments will be cleared. This cannot be undone.`)) return;
+                                        try {
+                                            await deleteIndividual(ind.individual_id);
+                                            setIndividuals((prev) => prev.filter((i) => i.individual_id !== ind.individual_id));
+                                        } catch (err: any) {
+                                            alert(err?.message || 'Failed to delete individual');
+                                        }
+                                    }}
+                                >
+                                    Delete
+                                </button>
+                            )}
+                        </div>
                     ))}
+                </div>
+            )}
+
+            {/* -------- Create New Profile Modal -------- */}
+            {showCreateModal && (
+                <div
+                    className="create-profile-overlay"
+                    onClick={() => { if (!creating) setShowCreateModal(false); }}
+                    style={{
+                        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+                        display: 'grid', placeItems: 'center', zIndex: 1000, padding: '1rem',
+                        backdropFilter: 'blur(4px)',
+                    }}
+                >
+                    <div
+                        className="card create-profile-modal"
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ width: 'min(640px, 100%)', maxHeight: '90vh', overflow: 'auto' }}
+                    >
+                        <div className="card-header" style={{ justifyContent: 'space-between' }}>
+                            <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <span>🐾</span> Create New Quoll Profile
+                            </h3>
+                            <button
+                                type="button"
+                                className="btn btn-outline"
+                                onClick={() => setShowCreateModal(false)}
+                                disabled={creating}
+                                style={{ padding: '0.25rem 0.75rem' }}
+                            >✕</button>
+                        </div>
+                        <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+
+                            {/* Individual ID */}
+                            <div>
+                                <label style={{ fontSize: '0.85rem', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>
+                                    Individual ID <span style={{ color: 'var(--danger)' }}>*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    className="filter-select"
+                                    style={{ width: '100%' }}
+                                    placeholder="e.g. 02Q2, STQ_14A"
+                                    value={createForm.individual_id}
+                                    onChange={(e) => setCreateForm((f) => ({ ...f, individual_id: e.target.value }))}
+                                    disabled={creating}
+                                />
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Unique identifier for this quoll</span>
+                            </div>
+
+                            {/* Species */}
+                            <div>
+                                <label style={{ fontSize: '0.85rem', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>Species</label>
+                                <select
+                                    className="filter-select"
+                                    style={{ width: '100%' }}
+                                    value={createForm.species}
+                                    onChange={(e) => setCreateForm((f) => ({ ...f, species: e.target.value }))}
+                                    disabled={creating}
+                                >
+                                    <option>Spotted-tailed Quoll</option>
+                                    <option>Eastern Quoll</option>
+                                    <option>Western Quoll</option>
+                                    <option>Northern Quoll</option>
+                                </select>
+                            </div>
+
+                            {/* Nickname */}
+                            <div>
+                                <label style={{ fontSize: '0.85rem', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>Nickname (optional)</label>
+                                <input
+                                    type="text"
+                                    className="filter-select"
+                                    style={{ width: '100%' }}
+                                    placeholder="e.g. Shadow, Patch, Luna"
+                                    value={createForm.name}
+                                    onChange={(e) => setCreateForm((f) => ({ ...f, name: e.target.value }))}
+                                    disabled={creating}
+                                />
+                            </div>
+
+                            {/* Profile Summary */}
+                            <div>
+                                <label style={{ fontSize: '0.85rem', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>Profile Summary (optional)</label>
+                                <textarea
+                                    className="filter-select"
+                                    style={{ width: '100%', minHeight: 70, resize: 'vertical' }}
+                                    placeholder="Brief overview of this individual (habitat, behaviour, distinguishing features...)"
+                                    value={createForm.profile_lead}
+                                    onChange={(e) => setCreateForm((f) => ({ ...f, profile_lead: e.target.value }))}
+                                    disabled={creating}
+                                />
+                            </div>
+
+                            {/* Ecologist Notes */}
+                            <div>
+                                <label style={{ fontSize: '0.85rem', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>Ecologist Notes (optional)</label>
+                                <textarea
+                                    className="filter-select"
+                                    style={{ width: '100%', minHeight: 70, resize: 'vertical' }}
+                                    placeholder="Internal notes, identification criteria, spot pattern description..."
+                                    value={createForm.notes}
+                                    onChange={(e) => setCreateForm((f) => ({ ...f, notes: e.target.value }))}
+                                    disabled={creating}
+                                />
+                            </div>
+
+                            {/* Image Upload */}
+                            <div>
+                                <label style={{ fontSize: '0.85rem', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>
+                                    Upload Images (optional)
+                                </label>
+                                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '0 0 0.5rem' }}>
+                                    Upload photos of this quoll that have already been identified by an ecologist. Choose a folder containing the images, or select individual files.
+                                </p>
+                                <input
+                                    ref={createFileRef}
+                                    type="file"
+                                    multiple
+                                    accept=".jpg,.jpeg,.png"
+                                    style={{ display: 'none' }}
+                                    onChange={(e) => { handleCreateFilesChange(e.target.files); e.target.value = ''; }}
+                                />
+                                <input
+                                    ref={createFolderRef}
+                                    type="file"
+                                    multiple
+                                    accept=".jpg,.jpeg,.png"
+                                    style={{ display: 'none' }}
+                                    {...({ webkitdirectory: '', directory: '' } as any)}
+                                    onChange={(e) => { handleCreateFilesChange(e.target.files); e.target.value = ''; }}
+                                />
+                                <div
+                                    style={{
+                                        border: '2px dashed var(--border)',
+                                        borderRadius: 8,
+                                        padding: '1.25rem 1rem',
+                                        textAlign: 'center',
+                                        transition: 'border-color 0.2s',
+                                        background: 'var(--bg-secondary)',
+                                    }}
+                                >
+                                    {createFiles.length > 0 ? (
+                                        <div>
+                                            <span style={{ fontSize: '1.4rem' }}>📸</span>
+                                            <div style={{ fontWeight: 600, marginTop: '0.35rem', fontSize: '0.95rem' }}>{createFiles.length} image{createFiles.length !== 1 ? 's' : ''} selected</div>
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                                                {createFiles.slice(0, 3).map((f) => f.name).join(', ')}{createFiles.length > 3 ? `, +${createFiles.length - 3} more` : ''}
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div>
+                                            <span style={{ fontSize: '1.75rem', opacity: 0.4 }}>📂</span>
+                                            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                                                Choose a folder or individual images (JPG / PNG)
+                                            </div>
+                                        </div>
+                                    )}
+                                    <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', marginTop: '0.75rem' }}>
+                                        <button
+                                            type="button"
+                                            className="btn btn-primary"
+                                            style={{ fontSize: '0.8rem', padding: '0.4rem 0.85rem' }}
+                                            onClick={() => createFolderRef.current?.click()}
+                                            disabled={creating}
+                                        >
+                                            📁 Choose Folder
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn btn-outline"
+                                            style={{ fontSize: '0.8rem', padding: '0.4rem 0.85rem' }}
+                                            onClick={() => createFileRef.current?.click()}
+                                            disabled={creating}
+                                        >
+                                            🖼️ Choose Images
+                                        </button>
+                                    </div>
+                                </div>
+                                {createFiles.length > 0 && (
+                                    <button
+                                        type="button"
+                                        className="btn btn-outline"
+                                        style={{ marginTop: '0.5rem', fontSize: '0.78rem' }}
+                                        onClick={() => setCreateFiles([])}
+                                        disabled={creating}
+                                    >
+                                        Clear images
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* Error / Success messages */}
+                            {createError && (
+                                <div style={{ padding: '0.65rem 0.85rem', borderRadius: 6, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', fontSize: '0.85rem' }}>
+                                    {createError}
+                                </div>
+                            )}
+                            {createSuccess && (
+                                <div style={{ padding: '0.65rem 0.85rem', borderRadius: 6, background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', color: '#10b981', fontSize: '0.85rem', fontWeight: 600 }}>
+                                    ✓ {createSuccess}
+                                </div>
+                            )}
+
+                            {/* Actions */}
+                            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.25rem' }}>
+                                <button
+                                    type="button"
+                                    className="btn btn-primary"
+                                    style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
+                                    onClick={handleCreateSubmit}
+                                    disabled={creating || !!createSuccess}
+                                >
+                                    {creating ? (
+                                        <>
+                                            <span className="spinner-inline" />
+                                            Creating...
+                                        </>
+                                    ) : (
+                                        <>🐾 Create Profile</>
+                                    )}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-outline"
+                                    onClick={() => setShowCreateModal(false)}
+                                    disabled={creating}
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>
@@ -2971,11 +3427,23 @@ function SpeciesByIndividual() {
    INDIVIDUAL PROFILE PAGE (WildlifeTracker-style)
    ============================================================ */
     function IndividualImages() {
+    const { user } = useAuth();
+    const isAdmin = user?.role === 'admin';
+    const navigate = useNavigate();
     const { speciesKey, individualId } = useParams();
     const decodedId = individualId ? decodeURIComponent(individualId) : '';
     const decodedSpecies = speciesKey ? decodeURIComponent(speciesKey).replace(/-/g, ' ') : '';
 
     const [individual, setIndividual] = useState<IndividualData | null>(null);
+    const [profileLead, setProfileLead] = useState(SPOTTED_QUOLL_OVERVIEW);
+    const [profileNotes, setProfileNotes] = useState('');
+    const [editingLead, setEditingLead] = useState(false);
+    const [editingNotes, setEditingNotes] = useState(false);
+    const [draftLead, setDraftLead] = useState(SPOTTED_QUOLL_OVERVIEW);
+    const [draftNotes, setDraftNotes] = useState('');
+    const [profileSaveMsg, setProfileSaveMsg] = useState<string | null>(null);
+    const [profileSaveErr, setProfileSaveErr] = useState<string | null>(null);
+    const [profileSaving, setProfileSaving] = useState(false);
     const [recentCaptures, setRecentCaptures] = useState<Detection[]>([]);
     const [mapMarkers, setMapMarkers] = useState<{lat: number, lon: number, name: string, date: string}[]>([]);
     const [loading, setLoading] = useState(true);
@@ -2990,13 +3458,25 @@ function SpeciesByIndividual() {
     const [quickUploadErr, setQuickUploadErr] = useState<string | null>(null);
     const quickUploadInputRef = useRef<HTMLInputElement>(null);
 
+    const applyProfileText = (found: IndividualData | null) => {
+        const lead = found?.profile_lead?.trim() || SPOTTED_QUOLL_OVERVIEW;
+        const notes = found?.notes?.trim() || '';
+        setProfileLead(lead);
+        setProfileNotes(notes);
+        setDraftLead(lead);
+        setDraftNotes(notes);
+    };
+
     useEffect(() => {
         Promise.all([
-            fetchIndividuals().then(list => list.find((i) => i.individual_id === decodedId) || null),
+            fetchIndividualProfile(decodedId).catch(() => null),
+            fetchIndividuals().then((list) => list.find((i) => i.individual_id === decodedId) || null),
             fetchDetections({ individual_id: decodedId, per_page: 10 }).then(res => res.items).catch(() => [])
         ])
-        .then(async ([foundIndividual, captures]) => {
+        .then(async ([profileRow, listRow, captures]) => {
+            const foundIndividual = profileRow || listRow;
             setIndividual(foundIndividual);
+            applyProfileText(foundIndividual);
             setRecentCaptures(captures);
             const details = await Promise.all(captures.map(c => fetchDetectionDetail(c.id).catch(() => null)));
             const markers: typeof mapMarkers = [];
@@ -3066,6 +3546,41 @@ function SpeciesByIndividual() {
     while (gridSlots.length < 12) gridSlots.push(null);
 
     const commonName = 'Spotted-tailed Quoll';
+
+    const saveProfileLead = async () => {
+        setProfileSaving(true);
+        setProfileSaveErr(null);
+        setProfileSaveMsg(null);
+        try {
+            const updated = await updateIndividualProfile(decodedId, { profile_lead: draftLead });
+            setIndividual(updated);
+            applyProfileText(updated);
+            setEditingLead(false);
+            setProfileSaveMsg('Profile summary saved.');
+        } catch (e: any) {
+            setProfileSaveErr(e?.message || 'Failed to save profile summary.');
+        } finally {
+            setProfileSaving(false);
+        }
+    };
+
+    const saveProfileNotes = async () => {
+        setProfileSaving(true);
+        setProfileSaveErr(null);
+        setProfileSaveMsg(null);
+        try {
+            const updated = await updateIndividualProfile(decodedId, { notes: draftNotes });
+            setIndividual(updated);
+            applyProfileText(updated);
+            setEditingNotes(false);
+            setProfileSaveMsg('Notes saved.');
+        } catch (e: any) {
+            setProfileSaveErr(e?.message || 'Failed to save notes.');
+        } finally {
+            setProfileSaving(false);
+        }
+    };
+
     const handleQuickUpload = async (files: FileList | null) => {
         if (!files || files.length === 0) return;
         const chosen = Array.from(files).filter((f) => /\.(jpe?g|png)$/i.test(f.name));
@@ -3093,17 +3608,37 @@ function SpeciesByIndividual() {
 
     return (
         <div className="wt-individual-page">
-            <nav className="breadcrumb wt-breadcrumb">
-                <Link to="/">Home</Link>
-                <span className="sep">›</span>
-                <Link to="/individuals">Profiles</Link>
-                <span className="sep">›</span>
-                <Link to={`/individuals/species/${speciesKey}`}>{decodedSpecies}</Link>
-                <span className="sep">›</span>
-                <Link to={`/individuals/species/${speciesKey}/individuals`}>Individuals</Link>
-                <span className="sep">›</span>
-                <span className="wt-breadcrumb-current">{decodedId}</span>
-            </nav>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <nav className="breadcrumb wt-breadcrumb" style={{ flex: 1 }}>
+                    <Link to="/">Home</Link>
+                    <span className="sep">›</span>
+                    <Link to="/individuals">Profiles</Link>
+                    <span className="sep">›</span>
+                    <Link to={`/individuals/species/${speciesKey}`}>{decodedSpecies}</Link>
+                    <span className="sep">›</span>
+                    <Link to={`/individuals/species/${speciesKey}/individuals`}>Individuals</Link>
+                    <span className="sep">›</span>
+                    <span className="wt-breadcrumb-current">{decodedId}</span>
+                </nav>
+                {isAdmin && (
+                    <button
+                        type="button"
+                        className="btn btn-outline"
+                        style={{ fontSize: '0.8rem', color: '#e63946', borderColor: '#e63946', whiteSpace: 'nowrap' }}
+                        onClick={async () => {
+                            if (!window.confirm(`Delete individual "${decodedId}"?\nThis removes the profile and all sightings. Annotation assignments will be cleared. This cannot be undone.`)) return;
+                            try {
+                                await deleteIndividual(decodedId);
+                                navigate(`/individuals/species/${speciesKey}/individuals`);
+                            } catch (err: any) {
+                                alert(err?.message || 'Failed to delete individual');
+                            }
+                        }}
+                    >
+                        Delete profile
+                    </button>
+                )}
+            </div>
 
             {!individual && (
                 <div className="wt-banner-warn">
@@ -3117,7 +3652,46 @@ function SpeciesByIndividual() {
                     <h1 className="wt-profile-title">
                         {commonName} — <strong>{decodedId}</strong>
                     </h1>
-                    <p className="wt-profile-lead">{SPOTTED_QUOLL_OVERVIEW}</p>
+                    <div className="wt-profile-lead-block">
+                        {editingLead && isAdmin ? (
+                            <>
+                                <textarea
+                                    className="form-input"
+                                    rows={5}
+                                    value={draftLead}
+                                    onChange={(e) => setDraftLead(e.target.value)}
+                                    style={{ width: '100%', marginBottom: '0.5rem' }}
+                                />
+                                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                    <button type="button" className="btn btn-primary" onClick={saveProfileLead} disabled={profileSaving}>
+                                        Save summary
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-outline"
+                                        onClick={() => { setDraftLead(profileLead); setEditingLead(false); }}
+                                        disabled={profileSaving}
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <p className="wt-profile-lead">{profileLead}</p>
+                                {isAdmin && (
+                                    <button
+                                        type="button"
+                                        className="btn btn-outline"
+                                        style={{ marginTop: '0.5rem' }}
+                                        onClick={() => { setDraftLead(profileLead); setEditingLead(true); }}
+                                    >
+                                        Edit summary
+                                    </button>
+                                )}
+                            </>
+                        )}
+                    </div>
                 </div>
                 <div className="wt-profile-hero-photo">
                     {heroSrc ? (
@@ -3168,15 +3742,18 @@ function SpeciesByIndividual() {
                         >
                             ↑ Upload Pic
                         </button>
-                        <button type="button" className="wt-btn wt-btn-outline" disabled title="Demo placeholder">
-                            ♥ Like
-                        </button>
                     </div>
                     {quickUploadBusy && <p style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>Opening upload and sending images…</p>}
                     {quickUploadMsg && <p style={{ marginTop: 8, fontSize: 12, color: 'var(--success)' }}>{quickUploadMsg}</p>}
                     {quickUploadErr && <p style={{ marginTop: 8, fontSize: 12, color: 'var(--danger)' }}>{quickUploadErr}</p>}
                 </aside>
             </section>
+
+            {(profileSaveMsg || profileSaveErr) && (
+                <p style={{ margin: '0.75rem 0', fontSize: '0.9rem', color: profileSaveErr ? 'var(--danger)' : 'var(--success)' }}>
+                    {profileSaveErr || profileSaveMsg}
+                </p>
+            )}
 
             <div className="wt-tab-shell">
                 <div className="wt-tab-header">
@@ -3206,7 +3783,7 @@ function SpeciesByIndividual() {
                 <div className="wt-tab-body">
                     {tab === 'overview' && (
                         <div className="wt-overview">
-                            <p>{SPOTTED_QUOLL_OVERVIEW}</p>
+                            <p>{profileLead}</p>
                             <div className="wt-mini-stats">
                                 <div>
                                     <div className="lbl">Sightings</div>
@@ -3317,43 +3894,67 @@ function SpeciesByIndividual() {
                     )}
                     {tab === 'notes' && (
                         <div className="wt-notes">
-                            <h3>Re-identification (prototype)</h3>
-                            <p>
-                                Offline embeddings (MegaDescriptor-L-384) support matching new crops to known
-                                individuals. The API exposes a short summary for demos — no GPU required on the server.
-                            </p>
-                            {reidInfo && (
-                                <ul className="wt-reid-list">
-                                    {typeof reidInfo.model_name === 'string' && (
-                                        <li>
-                                            <strong>Model:</strong> {reidInfo.model_name}
-                                        </li>
+                            <h3>Ecologist notes</h3>
+                            {editingNotes && isAdmin ? (
+                                <>
+                                    <textarea
+                                        className="form-input"
+                                        rows={10}
+                                        value={draftNotes}
+                                        onChange={(e) => setDraftNotes(e.target.value)}
+                                        style={{ width: '100%', marginBottom: '0.5rem' }}
+                                        placeholder="Field observations, behaviour, collar status, site context..."
+                                    />
+                                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                        <button type="button" className="btn btn-primary" onClick={saveProfileNotes} disabled={profileSaving}>
+                                            Save notes
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn btn-outline"
+                                            onClick={() => { setDraftNotes(profileNotes); setEditingNotes(false); }}
+                                            disabled={profileSaving}
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    {profileNotes ? (
+                                        <p style={{ whiteSpace: 'pre-wrap' }}>{profileNotes}</p>
+                                    ) : (
+                                        <p style={{ color: 'var(--text-muted)' }}>No notes recorded for this individual yet.</p>
                                     )}
-                                    {typeof reidInfo.metrics_closed_set_rank1 === 'string' && (
-                                        <li>
-                                            <strong>Rank-1 (typical):</strong> {reidInfo.metrics_closed_set_rank1}
-                                        </li>
+                                    {isAdmin && (
+                                        <button
+                                            type="button"
+                                            className="btn btn-outline"
+                                            style={{ marginTop: '0.75rem' }}
+                                            onClick={() => { setDraftNotes(profileNotes); setEditingNotes(true); }}
+                                        >
+                                            Edit notes
+                                        </button>
                                     )}
-                                    {typeof reidInfo.metrics_with_unknown_gate === 'string' && (
-                                        <li>
-                                            <strong>With UNKNOWN gate:</strong> {reidInfo.metrics_with_unknown_gate}
-                                        </li>
-                                    )}
-                                    {Array.isArray(reidInfo.why_not_higher) && (
-                                        <li>
-                                            <strong>Why accuracy is limited:</strong>
-                                            <ul>
-                                                {(reidInfo.why_not_higher as string[]).map((line) => (
-                                                    <li key={line.slice(0, 40)}>{line}</li>
-                                                ))}
-                                            </ul>
-                                        </li>
-                                    )}
-                                </ul>
+                                </>
                             )}
-                            <p className="wt-doc-hint">
-                                Full narrative for your professor: <code>docs/REID_MODEL_RESULTS.md</code> in the repo.
-                            </p>
+                            <details style={{ marginTop: '1.5rem' }}>
+                                <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Re-ID model reference</summary>
+                                {reidInfo && (
+                                    <ul className="wt-reid-list" style={{ marginTop: '0.75rem' }}>
+                                        {typeof reidInfo.model_name === 'string' && (
+                                            <li>
+                                                <strong>Model:</strong> {reidInfo.model_name}
+                                            </li>
+                                        )}
+                                        {typeof reidInfo.metrics_closed_set_rank1 === 'string' && (
+                                            <li>
+                                                <strong>Rank-1 (typical):</strong> {reidInfo.metrics_closed_set_rank1}
+                                            </li>
+                                        )}
+                                    </ul>
+                                )}
+                            </details>
                         </div>
                     )}
                 </div>
@@ -3464,6 +4065,7 @@ function LoginPage() {
     const [tab, setTab] = useState<'login' | 'register'>('login');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+    const [showPassword, setShowPassword] = useState(false);
     const [fullName, setFullName] = useState('');
     const [role, setRole] = useState('reviewer');
     const [error, setError] = useState('');
@@ -3473,7 +4075,16 @@ function LoginPage() {
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault(); setError(''); setLoading(true);
-        try { await login(email, password); } catch { setError('Invalid credentials'); }
+        try {
+            await login(email, password);
+        } catch (err: any) {
+            const msg: string = err?.message ?? '';
+            if (msg.toLowerCase().includes('disabled')) {
+                setError('Your account has been disabled. Contact an administrator.');
+            } else {
+                setError('Invalid email or password. Please try again.');
+            }
+        }
         setLoading(false);
     };
 
@@ -3645,26 +4256,41 @@ function LoginPage() {
                             <label style={{ fontSize: '0.85rem', fontWeight: '600', display: 'block', marginBottom: '0.5rem', color: '#374151' }}>
                                 🔑 Password
                             </label>
-                            <input 
-                                type="password" 
-                                value={password} 
-                                onChange={(e) => setPassword(e.target.value)}
-                                placeholder="••••••••"
-                                required 
-                                minLength={8}
-                                style={{
-                                    width: '100%',
-                                    padding: '0.875rem 1rem',
-                                    border: '2px solid #e5e7eb',
-                                    borderRadius: '8px',
-                                    fontSize: '0.9rem',
-                                    transition: 'all 0.3s ease',
-                                    boxSizing: 'border-box',
-                                    outline: 'none'
-                                }}
-                                onFocus={(e) => e.target.style.borderColor = '#10b981'}
-                                onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
-                            />
+                            <div style={{ position: 'relative' }}>
+                                <input
+                                    type={showPassword ? 'text' : 'password'}
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    placeholder="••••••••"
+                                    required
+                                    minLength={8}
+                                    style={{
+                                        width: '100%',
+                                        padding: '0.875rem 3rem 0.875rem 1rem',
+                                        border: '2px solid #e5e7eb',
+                                        borderRadius: '8px',
+                                        fontSize: '0.9rem',
+                                        transition: 'all 0.3s ease',
+                                        boxSizing: 'border-box',
+                                        outline: 'none',
+                                    }}
+                                    onFocus={(e) => e.target.style.borderColor = '#10b981'}
+                                    onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowPassword((v) => !v)}
+                                    style={{
+                                        position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)',
+                                        background: 'none', border: 'none', cursor: 'pointer', fontSize: '1rem',
+                                        color: '#6b7280', padding: '0.25rem', lineHeight: 1,
+                                    }}
+                                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                                    tabIndex={-1}
+                                >
+                                    {showPassword ? '🙈' : '👁️'}
+                                </button>
+                            </div>
                         </div>
 
                         {tab === 'register' && (

@@ -192,12 +192,22 @@ class IndividualBase(BaseModel):
 
 
 class IndividualCreate(IndividualBase):
-    ref_left_detection_id: int
-    ref_right_detection_id: int
+    ref_left_detection_id: Optional[int] = None
+    ref_right_detection_id: Optional[int] = None
+    notes: Optional[str] = None
+    profile_lead: Optional[str] = None
+
+
+class IndividualProfileUpdate(BaseModel):
+    """Admin-only profile text fields for an individual page."""
+    profile_lead: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class IndividualOut(IndividualBase):
     id: int
+    profile_lead: Optional[str] = None
+    notes: Optional[str] = None
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
     total_sightings: int = 0

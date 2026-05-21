@@ -1,4 +1,8 @@
 import React, { useEffect, useState } from 'react';
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, BarChart, Bar, Legend,
+} from 'recharts';
 import { fetchAdminDashboardStats, postAdminReidBackfill, type ReidBackfillMode } from './api';
 
 // --- TypeScript Interfaces for Data Safety ---
@@ -15,10 +19,33 @@ interface Sighting {
   img: string;
 }
 
+interface AccuracyPoint {
+  month: string;
+  accuracy: number;
+  total: number;
+}
+
+interface BreakdownItem {
+  name: string;
+  value: number;
+}
+
+interface ActivityPoint {
+  month: string;
+  detections: number;
+}
+
 interface DashboardData {
   stats: StatCard[];
   recent_sightings: Sighting[];
+  analytics?: {
+    accuracy_trend: AccuracyPoint[];
+    identification_breakdown: BreakdownItem[];
+    monthly_activity: ActivityPoint[];
+  };
 }
+
+const CHART_COLORS = ['#2d6a4f', '#ffb703', '#e63946'];
 
 const AdminPage: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -167,40 +194,100 @@ const AdminPage: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
       {/* Recent Sightings Grid */}
       <section className="dashboard-section">
         <h3 className="section-title">Recent Sighting</h3>
-        <div className="sightings-grid">
-          {data.recent_sightings.map((sighting) => (
-            <div key={sighting.id} className="sighting-card">
-              <div className="image-wrapper">
-                <img src={sighting.img} alt="Quoll Sighting" />
-                <span className="confidence-badge">{sighting.tag}</span>
-              </div>
-              <div className="card-info">
-                <span className="sighting-id">ID: {sighting.id}</span>
-                <span className="version-tag">v.Quoll-AI</span>
-              </div>
-              <button className="action-btn">{sighting.status}</button>
+        {data.recent_sightings.length > 0 ? (
+          <>
+            <div className="sightings-grid">
+              {data.recent_sightings.map((sighting) => (
+                <div key={sighting.id} className="sighting-card">
+                  <div className="image-wrapper">
+                    <img
+                      src={sighting.img}
+                      alt="Quoll Sighting"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                    <span className="confidence-badge">{sighting.tag}</span>
+                  </div>
+                  <div className="card-info">
+                    <span className="sighting-id">ID: {sighting.id}</span>
+                    <span className="version-tag">v.Quoll-AI</span>
+                  </div>
+                  <button className="action-btn">{sighting.status}</button>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-        <button className="show-more-btn">Show More Records</button>
+            <button className="show-more-btn">Show More Records</button>
+          </>
+        ) : (
+          <div className="placeholder-viz" style={{ height: 120 }}>
+            No recent quoll sightings with images yet.
+          </div>
+        )}
       </section>
 
-      {/* Analytics Visualization Placeholders */}
+      {/* Analytics */}
       <section className="dashboard-section">
         <h3 className="section-title">Analytics</h3>
         <div className="analytics-grid">
+
           <div className="chart-box">
             <h4>Identification Accuracy Trend</h4>
-            <div className="placeholder-viz">📈 [Line Chart Area]</div>
+            {(data.analytics?.accuracy_trend ?? []).length > 0 ? (
+              <ResponsiveContainer width="100%" height={160}>
+                <LineChart data={data.analytics!.accuracy_trend} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
+                  <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" width={36} />
+                  <Tooltip formatter={(v: number) => [`${v}%`, 'Accuracy']} />
+                  <Line type="monotone" dataKey="accuracy" stroke="#2d6a4f" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="placeholder-viz">No annotation data yet</div>
+            )}
           </div>
+
           <div className="chart-box">
             <h4>Positive vs Unverified Identifications</h4>
-            <div className="placeholder-viz">⭕ [Donut Chart Area]</div>
+            {(data.analytics?.identification_breakdown ?? []).some((d) => d.value > 0) ? (
+              <ResponsiveContainer width="100%" height={160}>
+                <PieChart>
+                  <Pie
+                    data={data.analytics!.identification_breakdown}
+                    innerRadius={42}
+                    outerRadius={65}
+                    paddingAngle={2}
+                    dataKey="value"
+                  >
+                    {data.analytics!.identification_breakdown.map((_, i) => (
+                      <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                  <Legend iconSize={10} wrapperStyle={{ fontSize: 12 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="placeholder-viz">No identification data yet</div>
+            )}
           </div>
+
           <div className="chart-box span-full">
-            <h4>User Activity Distribution</h4>
-            <div className="placeholder-viz">📊 [Activity Heatmap Area]</div>
+            <h4>Monthly Detection Activity</h4>
+            {(data.analytics?.monthly_activity ?? []).length > 0 ? (
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={data.analytics!.monthly_activity} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
+                  <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} width={40} />
+                  <Tooltip />
+                  <Bar dataKey="detections" fill="#2d6a4f" radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="placeholder-viz">No detection data yet</div>
+            )}
           </div>
+
         </div>
       </section>
     </div>
