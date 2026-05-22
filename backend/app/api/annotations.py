@@ -1,6 +1,6 @@
 """Annotation CRUD endpoints for ecologist review workflow."""
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_db
@@ -35,6 +35,13 @@ async def create_annotation(
                 status_code=404,
                 detail=f"Individual '{payload.individual_id}' does not exist. Create the profile first.",
             )
+
+    if payload.individual_id:
+        await db.execute(
+            sa_update(Annotation)
+            .where(Annotation.detection_id == payload.detection_id)
+            .values(individual_id=None)
+        )
 
     ann = Annotation(
         detection_id=payload.detection_id,
@@ -107,14 +114,30 @@ async def update_annotation(
     ann.annotator = user.email
 
     await db.flush()
-    if "individual_id" in updates and ann.individual_id:
+    if "individual_id" in updates:
+        if ann.individual_id:
+            await db.execute(
+                sa_update(Annotation)
+                .where(
+                    Annotation.detection_id == ann.detection_id,
+                    Annotation.id != ann.id,
+                )
+                .values(individual_id=None)
+            )
+        else:
+            await db.execute(
+                sa_update(Annotation)
+                .where(Annotation.detection_id == ann.detection_id)
+                .values(individual_id=None)
+            )
+        await db.flush()
         await resolve_reid_suggestions(
             db,
             detection_id=ann.detection_id,
             chosen_individual_id=ann.individual_id,
             annotator=user.email,
         )
-        if ann.individual_id != before_individual:
+        if ann.individual_id and ann.individual_id != before_individual:
             await incremental_update_from_detection(
                 db,
                 detection_id=ann.detection_id,

@@ -2,8 +2,15 @@
 import io
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.individual import Individual
 from backend.tests.conftest import auth_header
+
+
+async def _seed_individual(db: AsyncSession, individual_id: str) -> None:
+    db.add(Individual(individual_id=individual_id, species="Spotted-tailed Quoll"))
+    await db.commit()
 
 
 @pytest.mark.asyncio
@@ -57,7 +64,8 @@ async def test_get_image_detail(client: AsyncClient, sample_data):
 
 
 @pytest.mark.asyncio
-async def test_get_image_detail_includes_detection_annotations(client: AsyncClient, test_user, sample_data):
+async def test_get_image_detail_includes_detection_annotations(client: AsyncClient, test_user, sample_data, db):
+    await _seed_individual(db, "01Q1")
     det = sample_data["detections"][0]
     img_id = det.image_id
     await client.post("/api/annotations/", json={

@@ -126,7 +126,12 @@ async def delete_individual(
     ind = (
         await db.execute(select(Individual).where(Individual.individual_id == individual_id))
     ).scalar_one_or_none()
-    if not ind:
+    assignment_count = (
+        await db.execute(
+            select(func.count(Annotation.id)).where(Annotation.individual_id == individual_id)
+        )
+    ).scalar() or 0
+    if not ind and assignment_count == 0:
         raise HTTPException(status_code=404, detail="Individual not found")
 
     await db.execute(
@@ -134,8 +139,9 @@ async def delete_individual(
         .where(Annotation.individual_id == individual_id)
         .values(individual_id=None)
     )
-    await db.execute(
-        sa_delete(Sighting).where(Sighting.individual_id == ind.id)
-    )
-    await db.delete(ind)
+    if ind:
+        await db.execute(
+            sa_delete(Sighting).where(Sighting.individual_id == ind.id)
+        )
+        await db.delete(ind)
     await db.flush()
