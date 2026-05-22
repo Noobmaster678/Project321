@@ -3444,7 +3444,6 @@ function SpeciesByIndividual() {
     const [profileSaveMsg, setProfileSaveMsg] = useState<string | null>(null);
     const [profileSaveErr, setProfileSaveErr] = useState<string | null>(null);
     const [profileSaving, setProfileSaving] = useState(false);
-    const [recentCaptures, setRecentCaptures] = useState<Detection[]>([]);
     const [mapMarkers, setMapMarkers] = useState<{lat: number, lon: number, name: string, date: string}[]>([]);
     const [loading, setLoading] = useState(true);
     const [tab, setTab] = useState<'overview' | 'images' | 'movement' | 'notes'>('images');
@@ -3471,26 +3470,11 @@ function SpeciesByIndividual() {
         Promise.all([
             fetchIndividualProfile(decodedId).catch(() => null),
             fetchIndividuals().then((list) => list.find((i) => i.individual_id === decodedId) || null),
-            fetchDetections({ individual_id: decodedId, per_page: 10 }).then(res => res.items).catch(() => [])
         ])
-        .then(async ([profileRow, listRow, captures]) => {
+        .then(([profileRow, listRow]) => {
             const foundIndividual = profileRow || listRow;
             setIndividual(foundIndividual);
             applyProfileText(foundIndividual);
-            setRecentCaptures(captures);
-            const details = await Promise.all(captures.map(c => fetchDetectionDetail(c.id).catch(() => null)));
-            const markers: typeof mapMarkers = [];
-            details.forEach(d => {
-                if (d?.camera?.latitude && d?.camera?.longitude) {
-                    markers.push({
-                        lat: d.camera.latitude,
-                        lon: d.camera.longitude,
-                        name: d.camera.name,
-                        date: d.created_at ? new Date(d.created_at).toLocaleDateString() : 'Recent'
-                    });
-                }
-            });
-            setMapMarkers(markers);
         })
         .finally(() => setLoading(false));
     }, [decodedId]);
@@ -3517,8 +3501,21 @@ function SpeciesByIndividual() {
     useEffect(() => {
         if (!decodedId) return;
         fetchIndividualTimeline(decodedId)
-            .then((data) => setTimeline(data.monthly_counts || []))
-            .catch(() => setTimeline([]));
+            .then((data) => {
+                setTimeline(data.monthly_counts || []);
+                setMapMarkers((data.events || [])
+                    .filter((event) => event.latitude != null && event.longitude != null)
+                    .map((event) => ({
+                        lat: event.latitude as number,
+                        lon: event.longitude as number,
+                        name: event.camera_name || 'Unknown camera',
+                        date: event.captured_at ? new Date(event.captured_at).toLocaleDateString() : 'Sighting',
+                    })));
+            })
+            .catch(() => {
+                setTimeline([]);
+                setMapMarkers([]);
+            });
     }, [decodedId]);
 
     if (loading) return <LoadingState />;
