@@ -2,6 +2,8 @@
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.conftest import auth_header
+
 
 @pytest.mark.asyncio
 async def test_list_detections_empty(client: AsyncClient):
@@ -23,6 +25,29 @@ async def test_filter_by_species(client: AsyncClient, sample_data):
     data = resp.json()
     assert data["total"] == 1
     assert "quoll" in data["items"][0]["species"].lower()
+
+
+@pytest.mark.asyncio
+async def test_filter_by_individual_id(client: AsyncClient, test_user, sample_data):
+    target = sample_data["detections"][0]
+    other = sample_data["detections"][1]
+    await client.post("/api/annotations/", json={
+        "detection_id": target.id,
+        "is_correct": True,
+        "individual_id": "02Q2",
+    }, headers=auth_header(test_user))
+    await client.post("/api/annotations/", json={
+        "detection_id": other.id,
+        "is_correct": True,
+        "individual_id": "03Q3",
+    }, headers=auth_header(test_user))
+
+    resp = await client.get("/api/detections/", params={"individual_id": "02Q2"})
+    data = resp.json()
+
+    assert resp.status_code == 200
+    assert data["total"] == 1
+    assert data["items"][0]["id"] == target.id
 
 
 @pytest.mark.asyncio
