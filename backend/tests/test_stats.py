@@ -58,6 +58,13 @@ async def test_reid_info(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_reid_suggestions_requires_auth(client: AsyncClient, sample_data):
+    det_id = sample_data["detections"][0].id
+    resp = await client.get(f"/api/reid/detections/{det_id}/suggestions")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_individual_gallery_unknown_id(client: AsyncClient):
     resp = await client.get("/api/stats/individuals/__no_such_quoll__/gallery")
     assert resp.status_code == 200
