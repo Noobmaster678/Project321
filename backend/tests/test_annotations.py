@@ -68,6 +68,22 @@ async def test_update_annotation(client: AsyncClient, test_user, sample_data):
 
 
 @pytest.mark.asyncio
+async def test_update_annotation_allows_annotation_only_individual_id(client: AsyncClient, test_user, sample_data):
+    det_id = sample_data["detections"][0].id
+    create_resp = await client.post("/api/annotations/", json={
+        "detection_id": det_id, "is_correct": True,
+    }, headers=auth_header(test_user))
+    ann_id = create_resp.json()["id"]
+
+    resp = await client.put(f"/api/annotations/{ann_id}", json={
+        "individual_id": "NEW-QUOLL",
+    }, headers=auth_header(test_user))
+
+    assert resp.status_code == 200
+    assert resp.json()["individual_id"] == "NEW-QUOLL"
+
+
+@pytest.mark.asyncio
 async def test_annotation_individual_assignment(client: AsyncClient, test_user, sample_data):
     det_id = sample_data["detections"][0].id
     resp = await client.post("/api/annotations/", json={
