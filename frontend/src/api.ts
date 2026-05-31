@@ -1,4 +1,5 @@
-/** * Base URLs for backend API routing and static file storage access.
+/**
+ * Base URLs for backend API routing and static file storage access.
  */
 const API_BASE = '/api';
 const STORAGE_BASE = '/storage';
@@ -34,9 +35,9 @@ function authHeaders(): Record<string, string> {
  * A custom wrapper around the native browser fetch API.
  * Automatically intercepts outgoing requests and injects the JWT authentication 
  * headers so we don't have to manually attach them to every single API call.
- *  param url - The API endpoint to call.
- * param init - Optional fetch configuration (method, body, etc.).
- * returns The standard Promise<Response> object.
+ * @param url - The API endpoint to call.
+ * @param init - Optional fetch configuration (method, body, etc.).
+ * @returns The standard Promise<Response> object.
  */
 async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
     const res = await fetch(url, {
@@ -273,9 +274,9 @@ export interface IndividualTimelineResponse {
  * Authenticates a user against the backend API.
  * Note: FastAPI's OAuth2PasswordRequestForm expects data as URL encoded form data, 
  * not standard JSON, which is why URLSearchParams is used here.
- * param email - The user's email address (sent as 'username' to the backend).
- * param password - The user's plain-text password.
- * returns A Promise resolving to the authenticated UserData profile.
+ * @param email - The user's email address (sent as 'username' to the backend).
+ * @param password - The user's plain-text password.
+ * @returns A Promise resolving to the authenticated UserData profile.
  */
 export async function login(email: string, password: string): Promise<UserData> {
     const form = new URLSearchParams();
@@ -294,11 +295,11 @@ export async function login(email: string, password: string): Promise<UserData> 
 
 /**
  * Registers a new user account in the system.
- * param email - The new user's email address.
- * param password - The new user's desired password.
- * param fullName - The user's first and last name.
- * param role - The authorization role (e.g., 'admin', 'researcher').
- * returns A Promise resolving to the newly created UserData.
+ * @param email - The new user's email address.
+ * @param password - The new user's desired password.
+ * @param fullName - The user's first and last name.
+ * @param role - The authorization role (e.g., 'admin', 'researcher').
+ * @returns A Promise resolving to the newly created UserData.
  */
 export async function register(email: string, password: string, fullName: string, role: string): Promise<UserData> {
     const res = await fetch(`${API_BASE}/auth/register`, {

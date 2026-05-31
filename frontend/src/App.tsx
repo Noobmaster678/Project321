@@ -166,11 +166,10 @@ function HomeHeader() {
                     <div style={{ position: 'relative' }}>
                         <button
                             type="button"
-                            className="nav-icon-btn"
+                            className="nav-icon-btn nav-text-btn"
                             onClick={() => setUserMenuOpen((o) => !o)}
                             aria-label="User menu"
                             title={user.email}
-                            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
                         >
                             👤 <span style={{ fontSize: '0.8rem', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.full_name ?? user.email.split('@')[0]}</span>
                         </button>
@@ -202,7 +201,7 @@ function HomeHeader() {
                         )}
                     </div>
                 ) : (
-                    <Link to="/login" className="nav-icon-btn" aria-label="Sign in">👤 Sign in</Link>
+                    <Link to="/login" className="nav-icon-btn nav-text-btn" aria-label="Sign in">👤 Sign in</Link>
                 )}
             </div>
         </header>
@@ -229,27 +228,24 @@ function Footer() {
                     <p className="footer-tagline">Advanced wildlife monitoring and conservation technology</p>
                 </div>
                 <div className="footer-col">
-                    <h4>Features</h4>
-                    <Link to="/detections">AI Recognition</Link>
-                    <Link to="/individuals">Movement Tracking</Link>
-                    <Link to="/reports">Data Analytics</Link>
+                    <h4>Explore</h4>
+                    <Link to="/">Dashboard</Link>
+                    <Link to="/images">Images</Link>
+                    <Link to="/individuals">Profiles</Link>
                 </div>
                 <div className="footer-col">
-                    <h4>Support</h4>
-                    <a href="#docs">Documentation</a>
-                    <Link to="/help">Help Center</Link>
-                    <a href="#contact">Contact Us</a>
+                    <h4>Workflow</h4>
+                    <Link to="/upload">Upload Data</Link>
+                    <Link to="/detections">Detections</Link>
+                    <Link to="/reports">Reports</Link>
                 </div>
                 <div className="footer-col">
-                    <h4>Connect</h4>
-                    <div className="footer-connect">
-                        <a href="#twitter" aria-label="Twitter">𝕏</a>
-                        <a href="#youtube" aria-label="YouTube">▶</a>
-                        <a href="#linkedin" aria-label="LinkedIn">in</a>
-                    </div>
+                    <h4>Resources</h4>
+                    <Link to="/help">User Guide</Link>
+                    <Link to="/individuals">Re-ID &amp; Tracking</Link>
                 </div>
             </div>
-            <div className="footer-bottom">© 2025 WildlifeTracker. All rights reserved.</div>
+            <div className="footer-bottom">© 2026 WildlifeTracker · CSIT321 Capstone Project · University of Wollongong</div>
         </footer>
     );
 }
@@ -257,11 +253,42 @@ function Footer() {
 /* ============================================================
    HELP (placeholder)
    ============================================================ */
+/* In-app quick reference. Mirrors the bundled User Manual so reviewers
+ * have the common workflows and shortcuts one click away. */
 function HelpPage() {
+    const tasks: { title: string; steps: string[] }[] = [
+        { title: 'Browse images', steps: ['Open Images (or Profiles → a species → Images).', 'Filter by processed, animal, species or camera.', 'Click a thumbnail to open it; use ← / → to flip, Esc to close.'] },
+        { title: 'Confirm or correct a detection', steps: ['Open a photo and click a detection box to focus it.', 'If the species is right, nothing to do — it is already recorded.', 'If wrong, enter the correct species and save.'] },
+        { title: 'Identify a quoll (re-ID)', steps: ['Open a quoll photo and focus its detection.', 'Review the Top-5 AI suggestions, or type an ID under "Assign to existing ID".', 'Use ⇆ Compare side-by-side to match the spot pattern before assigning.'] },
+        { title: 'Compare side-by-side', steps: ['In the re-ID panel pick an individual, then ⇆ Compare side-by-side.', 'Drag the Zoom slider (both panes zoom together) and hover to magnify.', '← / → change reference photo, + / − zoom, Esc closes.'] },
+        { title: 'Upload a batch (Researcher/Admin)', steps: ['Open Upload and drop a camera-trap folder.', 'Name the collection and add camera coordinates if known.', 'Click Upload and watch the progress bar.'] },
+        { title: 'Reports & export', steps: ['Open Reports and set date, location, species or individual filters.', 'Choose CSV or JSON, then Export Report.'] },
+    ];
     return (
-        <div className="page-header">
-            <h2>Help</h2>
-            <p>Documentation and support — coming soon.</p>
+        <div>
+            <div className="page-header"><h2>Help &amp; quick reference</h2><p>Common tasks and shortcuts. See the full User Manual for step-by-step detail.</p></div>
+            <div className="card" style={{ marginBottom: '1rem' }}>
+                <div className="card-header"><h3 style={{ margin: 0 }}>Keyboard shortcuts</h3></div>
+                <div className="card-body" style={{ display: 'flex', flexWrap: 'wrap', gap: '1.25rem', fontSize: '0.85rem' }}>
+                    <div><strong>Image viewer:</strong> ← / → previous-next · Esc close</div>
+                    <div><strong>Compare:</strong> ← / → reference · + / − zoom · Esc close</div>
+                </div>
+            </div>
+            <div className="image-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+                {tasks.map((t) => (
+                    <div key={t.title} className="card">
+                        <div className="card-header"><h3 style={{ margin: 0, fontSize: '1rem' }}>{t.title}</h3></div>
+                        <div className="card-body">
+                            <ol style={{ margin: 0, paddingLeft: '1.1rem', display: 'grid', gap: '0.35rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                {t.steps.map((s, i) => <li key={i}>{s}</li>)}
+                            </ol>
+                        </div>
+                    </div>
+                ))}
+            </div>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '1rem' }}>
+                Signing in is only needed to change data (confirming detections, assigning individuals, uploading or creating profiles).
+            </p>
         </div>
     );
 }
@@ -1459,6 +1486,7 @@ function BatchUpload() {
    REPORTS
    ============================================================ */
 function Reports() {
+    const { user } = useAuth(); // exports require a signed-in user
     const [report, setReport] = useState<ReportData | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -1544,10 +1572,13 @@ function Reports() {
                         <h1 className="reports-title">Report Generation</h1>
                         <p className="reports-subtitle">Generate and export reports for your sightings data</p>
                     </div>
-                    <button onClick={handleExport} className="btn-export">
-                        <img src="https://api.iconify.design/heroicons:arrow-down-tray-20-solid.svg?color=white" alt="download" />
-                        Export Report
-                    </button>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.35rem' }}>
+                        <button onClick={handleExport} className="btn-export" disabled={!user} title={user ? 'Download the report' : 'Sign in to export reports'}>
+                            <img src="https://api.iconify.design/heroicons:arrow-down-tray-20-solid.svg?color=white" alt="download" />
+                            Export Report
+                        </button>
+                        {!user && <span className="tag tag-muted" style={{ fontSize: '0.72rem' }}>Sign in to export</span>}
+                    </div>
                 </div>
 
                 {/* Customisation UI */}
@@ -2237,6 +2268,7 @@ function SpeciesImages() {
     const [compareId, setCompareId] = useState('');
     const [compareGallery, setCompareGallery] = useState<IndividualGalleryItem[]>([]);
     const [compareLoading, setCompareLoading] = useState(false);
+    const [splitOpen, setSplitOpen] = useState(false); // full-screen side-by-side comparison
     const [reidSuggestions, setReidSuggestions] = useState<ReidSuggestionResponse | null>(null);
     const [reidSuggestionsLoading, setReidSuggestionsLoading] = useState(false);
     const [reidSuggestionsError, setReidSuggestionsError] = useState<string | null>(null);
@@ -2286,6 +2318,7 @@ function SpeciesImages() {
             setAssignMsg(null);
             setCompareId('');
             setCompareGallery([]);
+            setSplitOpen(false);
             setReidSuggestions(null);
             setReidSuggestionsError(null);
             setCreateOpen(false);
@@ -2353,7 +2386,14 @@ function SpeciesImages() {
 
     useEffect(() => {
         if (!selected) return;
-        const onKey = (e: KeyboardEvent) => { if (e.key === 'ArrowLeft') goPrev(); if (e.key === 'ArrowRight') goNext(); if (e.key === 'Escape') setSelected(null); };
+        const onKey = (e: KeyboardEvent) => {
+            // While the split-screen comparison is open it owns the keyboard
+            // (reference navigation + zoom), so the lightbox stays passive.
+            if (splitOpen) return;
+            if (e.key === 'ArrowLeft') goPrev();
+            if (e.key === 'ArrowRight') goNext();
+            if (e.key === 'Escape') setSelected(null);
+        };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     });
@@ -2805,6 +2845,15 @@ function SpeciesImages() {
                                                             </option>
                                                         ))}
                                                     </select>
+                                                    <button
+                                                        className="btn btn-primary"
+                                                        style={{ fontSize: '0.75rem', padding: '4px 10px', whiteSpace: 'nowrap' }}
+                                                        disabled={!compareId || compareLoading || compareGallery.length === 0}
+                                                        onClick={() => setSplitOpen(true)}
+                                                        title="Open a large side-by-side view to match spot patterns"
+                                                    >
+                                                        ⇆ Compare side-by-side
+                                                    </button>
                                                 </div>
                                                 {!compareId ? (
                                                     <div className="empty-state" style={{ padding: '0.5rem 0.75rem' }}>Pick an individual above to compare.</div>
@@ -2916,8 +2965,169 @@ function SpeciesImages() {
                             <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.75rem' }}>Use ←/→ to navigate, Esc to close</div>
                         </div>
                     </div>
+                    {splitOpen && (
+                        <SplitCompareModal
+                            targetImage={selected}
+                            targetDetection={focused ?? null}
+                            individualId={compareId}
+                            gallery={compareGallery}
+                            onClose={() => setSplitOpen(false)}
+                        />
+                    )}
                 </div>
             )}
+        </div>
+    );
+}
+
+/* ------------------------------------------------------------------ *
+ * Split-screen comparison
+ *
+ * Places the "target" quoll (the detection currently being identified)
+ * directly beside reference images of a known individual so a reviewer
+ * can match the distinctive spot pattern by eye. Both panes share a
+ * single zoom level for a fair comparison, while the magnified region
+ * of each pane follows that pane's own cursor — letting the reviewer
+ * sweep across the pelage independently on the left and right.
+ * ------------------------------------------------------------------ */
+
+/* A single zoomable image pane. Moving the mouse repositions the zoom
+ * focal point; `zoom` is supplied by the parent so both panes magnify
+ * in lockstep. */
+function ComparePane({ src, alt, badge, emptyText, zoom }: {
+    src: string | null;
+    alt: string;
+    badge: string;
+    emptyText: string;
+    zoom: number;
+}) {
+    const [origin, setOrigin] = useState({ x: 50, y: 50 });
+    const handleMove = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (zoom <= 1) return;
+        const r = e.currentTarget.getBoundingClientRect();
+        const x = Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100));
+        const y = Math.max(0, Math.min(100, ((e.clientY - r.top) / r.height) * 100));
+        setOrigin({ x, y });
+    };
+    return (
+        <div
+            onMouseMove={handleMove}
+            style={{
+                flex: 1, minWidth: 0, position: 'relative',
+                background: '#000', borderRadius: 8, overflow: 'hidden',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: zoom > 1 ? 'zoom-in' : 'default',
+            }}
+        >
+            {src ? (
+                <img
+                    src={src}
+                    alt={alt}
+                    draggable={false}
+                    style={{
+                        maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
+                        transform: `scale(${zoom})`,
+                        transformOrigin: `${origin.x}% ${origin.y}%`,
+                        transition: 'transform 0.06s linear',
+                        userSelect: 'none',
+                    }}
+                />
+            ) : (
+                <div className="empty-state" style={{ color: '#cbd5e1' }}>{emptyText}</div>
+            )}
+            <span style={{ position: 'absolute', top: 8, left: 8, background: 'rgba(0,0,0,0.65)', color: '#fff', fontSize: '0.72rem', fontWeight: 700, padding: '3px 8px', borderRadius: 5, pointerEvents: 'none' }}>{badge}</span>
+        </div>
+    );
+}
+
+function SplitCompareModal({ targetImage, targetDetection, individualId, gallery, onClose }: {
+    targetImage: ImageData;
+    targetDetection: Detection | null;
+    individualId: string;
+    gallery: IndividualGalleryItem[];
+    onClose: () => void;
+}) {
+    const [refIdx, setRefIdx] = useState(0);
+    const [zoom, setZoom] = useState(1);
+    // Default to the cropped target when a crop exists (best for spot matching),
+    // otherwise fall back to the full camera-trap frame.
+    const [targetMode, setTargetMode] = useState<'crop' | 'full'>(targetDetection?.crop_path ? 'crop' : 'full');
+
+    const refItems = gallery.filter((g) => g.crop_url || g.display_url || g.thumb_url);
+    const safeIdx = Math.min(refIdx, Math.max(0, refItems.length - 1));
+    const refItem = refItems[safeIdx] ?? null;
+    const refSrc = refItem ? (refItem.crop_url || refItem.display_url || refItem.thumb_url) : null;
+    const targetSrc = targetMode === 'crop' && targetDetection?.crop_path
+        ? storageUrl(targetDetection.crop_path)
+        : storageUrl(targetImage.file_path);
+
+    const prevRef = useCallback(() => setRefIdx((i) => Math.max(0, i - 1)), []);
+    const nextRef = useCallback(() => setRefIdx((i) => Math.min(refItems.length - 1, i + 1)), [refItems.length]);
+
+    // Own the keyboard while open (capture phase) so arrows drive the
+    // reference strip and Esc closes the comparison, not the lightbox beneath.
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') { e.stopPropagation(); onClose(); }
+            else if (e.key === 'ArrowLeft') { e.stopPropagation(); prevRef(); }
+            else if (e.key === 'ArrowRight') { e.stopPropagation(); nextRef(); }
+            else if (e.key === '+' || e.key === '=') setZoom((z) => Math.min(5, +(z + 0.5).toFixed(1)));
+            else if (e.key === '-' || e.key === '_') setZoom((z) => Math.max(1, +(z - 0.5).toFixed(1)));
+        };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+    }, [prevRef, nextRef, onClose]);
+
+    return (
+        <div className="lightbox-overlay" style={{ zIndex: 1100, background: 'rgba(0,0,0,0.85)' }} onClick={onClose}>
+            <div className="card" onClick={(e) => e.stopPropagation()} style={{ width: 'min(1200px, 97vw)', maxHeight: '94vh', display: 'flex', flexDirection: 'column' }}>
+                <div className="card-header" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <h3 style={{ margin: 0 }}>Compare — target vs {individualId}</h3>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                        {targetDetection?.crop_path && (
+                            <div style={{ display: 'flex', gap: 4 }}>
+                                <button className={targetMode === 'crop' ? 'btn btn-primary' : 'btn btn-outline'} style={{ fontSize: '0.72rem', padding: '2px 10px' }} onClick={() => setTargetMode('crop')}>Crop</button>
+                                <button className={targetMode === 'full' ? 'btn btn-primary' : 'btn btn-outline'} style={{ fontSize: '0.72rem', padding: '2px 10px' }} onClick={() => setTargetMode('full')}>Full frame</button>
+                            </div>
+                        )}
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem' }}>
+                            Zoom
+                            <input type="range" min={1} max={5} step={0.5} value={zoom} onChange={(e) => setZoom(Number(e.target.value))} />
+                            <span style={{ width: 30, textAlign: 'right' }}>{zoom.toFixed(1)}×</span>
+                        </label>
+                        <button className="btn btn-outline" onClick={onClose}>Close</button>
+                    </div>
+                </div>
+                <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', minHeight: 0, flex: 1 }}>
+                    <div style={{ display: 'flex', gap: '0.75rem', flex: 1, minHeight: '52vh' }}>
+                        <ComparePane src={targetSrc} alt="target detection" badge="TARGET" emptyText="No target image" zoom={zoom} />
+                        <ComparePane src={refSrc} alt={individualId} badge={`REFERENCE · ${individualId}`} emptyText={`No reference images for ${individualId}`} zoom={zoom} />
+                    </div>
+                    {/* Reference selector strip — pick which known image to compare against */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <button className="btn btn-outline" onClick={prevRef} disabled={safeIdx <= 0} style={{ padding: '2px 10px' }}>←</button>
+                        <div style={{ display: 'flex', gap: 6, overflowX: 'auto', flex: 1, padding: '2px' }}>
+                            {refItems.map((it, i) => {
+                                const t = it.thumb_url || it.crop_url || it.display_url || '';
+                                return (
+                                    <img
+                                        key={`${it.image_id}-${it.detection_id ?? i}`}
+                                        src={t}
+                                        alt=""
+                                        onClick={() => setRefIdx(i)}
+                                        style={{ flex: '0 0 64px', width: 64, height: 48, objectFit: 'cover', borderRadius: 5, cursor: 'pointer', border: i === safeIdx ? '2px solid var(--info)' : '2px solid transparent' }}
+                                    />
+                                );
+                            })}
+                        </div>
+                        <button className="btn btn-outline" onClick={nextRef} disabled={safeIdx >= refItems.length - 1} style={{ padding: '2px 10px' }}>→</button>
+                        <span className="tag tag-muted" style={{ whiteSpace: 'nowrap' }}>{refItems.length ? `${safeIdx + 1} / ${refItems.length}` : '0'}</span>
+                    </div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
+                        Hover a pane to magnify that region · ←/→ change reference · +/− zoom · Esc to close
+                    </div>
+                </div>
+            </div>
         </div>
     );
 }
