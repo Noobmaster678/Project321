@@ -291,6 +291,7 @@ async def upload_image(
     db.add(image)
     await db.flush()
     await db.refresh(image)
+    await db.commit()
 
     try:
         from backend.worker.tasks import process_image_task
@@ -522,6 +523,8 @@ async def upload_batch(
         )
         db.add(job)
         await db.flush()
+
+    await db.commit()
 
     try:
         from backend.worker.tasks import process_batch_task

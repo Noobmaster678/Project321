@@ -2,6 +2,7 @@
 import pytest
 from httpx import AsyncClient
 
+from backend.app.config import settings
 from backend.tests.conftest import auth_header
 
 
@@ -34,6 +35,33 @@ async def test_register_short_password(client: AsyncClient):
 async def test_register_invalid_role(client: AsyncClient):
     resp = await client.post("/api/auth/register", json={"email": "bad@example.com", "password": "password123", "role": "superuser"})
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_closed_registration_blocks_authenticated_non_admin(client: AsyncClient, test_user, monkeypatch):
+    monkeypatch.setattr(settings, "OPEN_REGISTRATION", False)
+
+    resp = await client.post(
+        "/api/auth/register",
+        json={"email": "closed@example.com", "password": "password123", "role": "researcher"},
+        headers=auth_header(test_user),
+    )
+
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_closed_registration_allows_admin_to_create_user(client: AsyncClient, admin_user, monkeypatch):
+    monkeypatch.setattr(settings, "OPEN_REGISTRATION", False)
+
+    resp = await client.post(
+        "/api/auth/register",
+        json={"email": "invited@example.com", "password": "password123", "role": "reviewer"},
+        headers=auth_header(admin_user),
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["email"] == "invited@example.com"
 
 
 @pytest.mark.asyncio

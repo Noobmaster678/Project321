@@ -49,6 +49,17 @@ function individualMatchesSpeciesPage(ind: IndividualData, speciesKeyDecoded: st
     return false;
 }
 
+function detectionMatchesSpeciesPage(det: Detection, speciesKeyDecoded: string): boolean {
+    const d = speciesKeyDecoded.toLowerCase().trim();
+    const sp = (det.species || '').toLowerCase();
+    if (!d) return true;
+    if (!sp) return false;
+    if (sp.includes(d) || d.includes(sp)) return true;
+    if (/\bquoll\b/.test(d) && /\bquoll\b/.test(sp)) return true;
+    if (d.includes('dasyurus') && (sp.includes('quoll') || sp.includes('dasyurus'))) return true;
+    return false;
+}
+
 /** Show Camera / Filename instead of just filename to disambiguate Reconyx images */
 function displayImageName(img: { filename: string; file_path: string }): string {
     if (!img.file_path) return img.filename;
@@ -2597,7 +2608,7 @@ function SpeciesImages() {
                                     for (const imgId of Array.from(selectedIds)) {
                                         try {
                                             const detail: any = await fetchImageDetail(imgId);
-                                            const dets: Detection[] = detail.detections || [];
+                                            const dets: Detection[] = (detail.detections || []).filter((det: Detection) => detectionMatchesSpeciesPage(det, decoded));
                                             for (const det of dets) {
                                                 await createAnnotation({ detection_id: det.id, is_correct: true, individual_id: bulkAssignId.trim() });
                                                 assigned++;
