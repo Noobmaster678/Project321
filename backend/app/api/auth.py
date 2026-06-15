@@ -56,7 +56,9 @@ async def register(
         )
 
     total_users = (await db.execute(select(func.count(User.id)))).scalar() or 0
-    if not settings.OPEN_REGISTRATION and total_users > 0 and requester is None:
+    registration_closed = not settings.OPEN_REGISTRATION and total_users > 0
+    requester_is_admin = requester is not None and requester.role == "admin"
+    if registration_closed and not requester_is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Open registration is disabled",
@@ -64,7 +66,6 @@ async def register(
 
     if payload.role == "admin":
         bootstrap_admin = total_users == 0
-        requester_is_admin = requester is not None and requester.role == "admin"
         if not bootstrap_admin and not requester_is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
