@@ -400,10 +400,10 @@ async def get_dashboard_stats(
 
     # Analytics 2: identification breakdown — confirmed / corrected / unverified
     confirmed = (await db.execute(
-        select(func.count(Annotation.id)).where(Annotation.is_correct == True)  # noqa: E712
+        select(func.count(distinct(Annotation.detection_id))).where(Annotation.is_correct == True)  # noqa: E712
     )).scalar() or 0
     corrected_count = (await db.execute(
-        select(func.count(Annotation.id)).where(
+        select(func.count(distinct(Annotation.detection_id))).where(
             Annotation.is_correct == False,  # noqa: E712
             Annotation.corrected_species.isnot(None),
         )

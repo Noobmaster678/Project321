@@ -335,8 +335,8 @@ function PendingReviewPage() {
                 const res = await fetchImages({ has_animal: false, per_page: 50, page, camera_id: cameraFilter });
                 setFilterImages(res);
             } else if (cat === 'assign-individual') {
-                const res = await fetchDetections({ species: 'quoll', review_status: 'verified', per_page: 50, page, camera_id: cameraFilter });
-                setFilterDetections(res.items.filter((d: any) => !(d.annotations ?? []).some((a: any) => a.individual_id)));
+                const res = await fetchDetections({ species: 'quoll', review_status: 'verified', needs_individual_id: true, per_page: 50, page, camera_id: cameraFilter });
+                setFilterDetections(res.items);
             }
         } catch { }
         setFilterLoading(false);
