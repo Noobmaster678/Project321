@@ -49,6 +49,17 @@ function individualMatchesSpeciesPage(ind: IndividualData, speciesKeyDecoded: st
     return false;
 }
 
+function detectionMatchesSpeciesPage(det: Detection, speciesKeyDecoded: string): boolean {
+    const d = speciesKeyDecoded.toLowerCase().trim();
+    const sp = (det.species || '').toLowerCase();
+    if (!d) return true;
+    if (!sp) return false;
+    if (sp.includes(d) || d.includes(sp)) return true;
+    if (/\bquoll\b/.test(d) && /\bquoll\b/.test(sp)) return true;
+    if (d.includes('dasyurus') && (sp.includes('quoll') || sp.includes('dasyurus'))) return true;
+    return false;
+}
+
 /** Show Camera / Filename instead of just filename to disambiguate Reconyx images */
 function displayImageName(img: { filename: string; file_path: string }): string {
     if (!img.file_path) return img.filename;
@@ -92,7 +103,7 @@ function AppShell() {
                     <Route path="/individuals/species/:speciesKey/individuals" element={<SpeciesByIndividual />} />
                     <Route path="/individuals/species/:speciesKey/individuals/:individualId" element={<IndividualImages />} />
                     <Route path="/upload" element={<RequireAuth><BatchUpload /></RequireAuth>} />
-                    <Route path="/reports" element={<Reports />} />
+                    <Route path="/reports" element={<RequireAuth><Reports /></RequireAuth>} />
                     {PENDING_REVIEW_ENABLED && (
                         <Route path="/pending-review" element={<RequireAuth><PendingReviewPage /></RequireAuth>} />
                     )}
@@ -677,9 +688,10 @@ function Dashboard() {
         const loadAll = async (showSpinner = false) => {
             if (showSpinner) setLoading(true);
             try {
+                const reportPromise = getToken() ? fetchReport().catch(() => null) : Promise.resolve(null);
                 const [s, r, cam, sp, det] = await Promise.all([
                     fetchStats(),
-                    fetchReport(),
+                    reportPromise,
                     fetchCameraStats(),
                     fetchSpeciesCounts(),
                     fetchDetections({ per_page: 5 }),
@@ -2357,6 +2369,13 @@ function SpeciesImages() {
         if (!isQuoll || focusedDetId == null) {
             setReidSuggestions(null);
             setReidSuggestionsError(null);
+            setReidSuggestionsLoading(false);
+            return;
+        }
+        if (!user) {
+            setReidSuggestions(null);
+            setReidSuggestionsError('Login required to view AI suggestions');
+            setReidSuggestionsLoading(false);
             return;
         }
         setReidSuggestionsLoading(true);
@@ -2368,7 +2387,7 @@ function SpeciesImages() {
                 setReidSuggestionsError(e?.message || 'No suggestions available');
             })
             .finally(() => setReidSuggestionsLoading(false));
-    }, [isQuoll, focusedDetId]);
+    }, [isQuoll, focusedDetId, user]);
 
     // Auto-fill the manual assign input with the current assignment when focus changes.
     useEffect(() => {
@@ -2597,7 +2616,8 @@ function SpeciesImages() {
                                     for (const imgId of Array.from(selectedIds)) {
                                         try {
                                             const detail: any = await fetchImageDetail(imgId);
-                                            const dets: Detection[] = detail.detections || [];
+                                            const dets: Detection[] = (detail.detections || [])
+                                                .filter((det: Detection) => detectionMatchesSpeciesPage(det, decoded));
                                             for (const det of dets) {
                                                 await createAnnotation({ detection_id: det.id, is_correct: true, individual_id: bulkAssignId.trim() });
                                                 assigned++;
