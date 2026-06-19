@@ -29,6 +29,7 @@ async def list_detections(
     date_to: str | None = Query(None, description="ISO date YYYY-MM-DD"),
     review_status: str | None = Query(None, description="unreviewed, verified, corrected, flagged"),
     category: str | None = None,
+    individual_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """List detections with optional filters."""
@@ -47,6 +48,13 @@ async def list_detections(
         query = query.where(Detection.image_id == image_id)
     if category is not None:
         query = query.where(Detection.category == category)
+    if individual_id is not None:
+        assigned_ids = (
+            select(Annotation.detection_id)
+            .where(Annotation.individual_id == individual_id)
+            .distinct()
+        )
+        query = query.where(Detection.id.in_(assigned_ids))
     if camera_id is not None:
         query = query.where(Image.camera_id == camera_id)
     if collection_id is not None:
@@ -133,9 +141,17 @@ async def review_queue(db: AsyncSession = Depends(get_db)):
         )
     )).scalar() or 0
 
+    assigned_individual_ids = (
+        select(Annotation.detection_id)
+        .where(Annotation.individual_id.isnot(None), Annotation.individual_id != "")
+        .distinct()
+    )
     verified_quoll_ids = (
         select(Annotation.detection_id)
-        .where(Annotation.is_correct == True, Annotation.individual_id.is_(None))  # noqa: E712
+        .where(
+            Annotation.is_correct == True,  # noqa: E712
+            Annotation.detection_id.notin_(assigned_individual_ids),
+        )
         .distinct()
     )
     quolls_needing_id = (await db.execute(

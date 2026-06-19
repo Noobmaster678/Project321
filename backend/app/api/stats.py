@@ -1,6 +1,6 @@
 """Dashboard statistics API endpoints."""
 from fastapi import APIRouter, Depends
-from sqlalchemy import select, func, and_, union
+from sqlalchemy import select, func, and_, union, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_db
@@ -150,7 +150,7 @@ async def individual_stats(db: AsyncSession = Depends(get_db)):
     ann_q = (
         select(
             Annotation.individual_id,
-            func.count(Detection.id).label("cnt"),
+            func.count(distinct(Detection.id)).label("cnt"),
             func.min(Image.captured_at).label("first"),
             func.max(Image.captured_at).label("last"),
         )
@@ -287,6 +287,7 @@ async def individual_timeline(individual_id: str, db: AsyncSession = Depends(get
         .outerjoin(Camera, Camera.id == Image.camera_id)
         .join(Annotation, Annotation.detection_id == Detection.id)
         .where(Annotation.individual_id == individual_id)
+        .distinct()
         .order_by(Image.captured_at.asc().nullslast(), Detection.id.asc())
     )
     rows = (await db.execute(q)).all()
