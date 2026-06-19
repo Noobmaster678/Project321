@@ -1,6 +1,9 @@
 """Tests for dashboard statistics endpoints."""
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.app.models.annotation import Annotation
 
 
 @pytest.mark.asyncio
@@ -64,3 +67,27 @@ async def test_individual_gallery_unknown_id(client: AsyncClient):
     data = resp.json()
     assert data["items"] == []
     assert data["source"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_individual_stats_deduplicate_duplicate_assignment_annotations(
+    client: AsyncClient,
+    sample_data,
+    db: AsyncSession,
+):
+    det = sample_data["detections"][0]
+    db.add_all([
+        Annotation(detection_id=det.id, individual_id="02Q2"),
+        Annotation(detection_id=det.id, individual_id="02Q2"),
+    ])
+    await db.commit()
+
+    stats_resp = await client.get("/api/stats/individuals")
+    stats = stats_resp.json()
+    profile = next(item for item in stats if item["individual_id"] == "02Q2")
+    assert profile["total_sightings"] == 1
+
+    timeline_resp = await client.get("/api/stats/individuals/02Q2/timeline")
+    timeline = timeline_resp.json()
+    assert len(timeline["events"]) == 1
+    assert timeline["monthly_counts"] == [{"month": "2023-10", "sightings": 1}]
