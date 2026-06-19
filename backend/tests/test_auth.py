@@ -8,13 +8,51 @@ from backend.tests.conftest import auth_header
 @pytest.mark.asyncio
 async def test_register(client: AsyncClient):
     resp = await client.post("/api/auth/register", json={
-        "email": "new@example.com", "password": "securepass1", "full_name": "New User", "role": "researcher",
+        "email": "new@example.com", "password": "securepass1", "full_name": "New User", "role": "reviewer",
     })
     assert resp.status_code == 201
     data = resp.json()
     assert data["email"] == "new@example.com"
-    assert data["role"] == "researcher"
+    assert data["role"] == "reviewer"
     assert "hashed_password" not in data
+
+
+@pytest.mark.asyncio
+async def test_public_register_cannot_create_elevated_user(client: AsyncClient):
+    resp = await client.post("/api/auth/register", json={
+        "email": "researcher@example.com",
+        "password": "securepass1",
+        "full_name": "Researcher",
+        "role": "researcher",
+    })
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_closed_registration_requires_admin_requester(client: AsyncClient, test_user, monkeypatch):
+    from backend.app.config import settings
+
+    monkeypatch.setattr(settings, "OPEN_REGISTRATION", False)
+    resp = await client.post(
+        "/api/auth/register",
+        json={"email": "closed@example.com", "password": "password123", "role": "reviewer"},
+        headers=auth_header(test_user),
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_can_register_user_when_registration_closed(client: AsyncClient, admin_user, monkeypatch):
+    from backend.app.config import settings
+
+    monkeypatch.setattr(settings, "OPEN_REGISTRATION", False)
+    resp = await client.post(
+        "/api/auth/register",
+        json={"email": "invited@example.com", "password": "password123", "role": "researcher"},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["role"] == "researcher"
 
 
 @pytest.mark.asyncio

@@ -27,8 +27,8 @@ async def run_reid_backfill(
     """
     mode:
       missing_only — same as upload pipeline: only detections with zero annotations.
-      refresh_auto — delete megadescriptor_reid rows for quoll crops, then re-infer unless a
-                     non-auto annotation already sets individual_id (manual ID preserved).
+      refresh_auto — refresh megadescriptor_reid rows for the limited candidate batch unless
+                     any non-auto annotation exists (manual review preserved).
     """
     if mode not in ("missing_only", "refresh_auto"):
         raise ValueError("mode must be missing_only or refresh_auto")
@@ -57,16 +57,6 @@ async def run_reid_backfill(
         quoll_sql_filter(),
     )
 
-    if mode == "refresh_auto":
-        res = await db.execute(
-            delete(Annotation).where(
-                Annotation.annotator == MEGAD_ANNOTATOR,
-                Annotation.detection_id.in_(select(Detection.id).where(base_filter)),
-            )
-        )
-        stats["removed_auto"] = int(res.rowcount or 0)
-        await db.flush()
-
     q = select(Detection).where(base_filter).order_by(Detection.id).limit(limit)
     dets = (await db.execute(q)).scalars().all()
 
@@ -89,10 +79,8 @@ async def run_reid_backfill(
                 stats["skipped"] += 1
                 continue
         else:
-            manual_id = any(
-                bool(a.individual_id) and (a.annotator or "") != MEGAD_ANNOTATOR for a in anns
-            )
-            if manual_id:
+            manual_annotation = any((a.annotator or "") != MEGAD_ANNOTATOR for a in anns)
+            if manual_annotation:
                 stats["skipped"] += 1
                 continue
 
@@ -108,6 +96,16 @@ async def run_reid_backfill(
             logger.exception("Re-ID backfill failed for detection %s", det.id)
             stats["errors"] += 1
             continue
+
+        if mode == "refresh_auto":
+            res = await db.execute(
+                delete(Annotation).where(
+                    Annotation.annotator == MEGAD_ANNOTATOR,
+                    Annotation.detection_id == det.id,
+                )
+            )
+            stats["removed_auto"] += int(res.rowcount or 0)
+            await db.flush()
 
         if not iid:
             stats["unknown"] += 1
