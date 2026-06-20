@@ -1,6 +1,6 @@
 """Annotation CRUD endpoints for ecologist review workflow."""
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_db
@@ -13,6 +13,21 @@ from backend.app.services.reid_learning import resolve_reid_suggestions, increme
 from backend.app.utils.dependencies import get_current_user
 
 router = APIRouter(prefix="/annotations", tags=["Annotations"])
+
+
+async def _clear_other_individual_assignments(
+    db: AsyncSession,
+    detection_id: int,
+    keep_annotation_id: int | None = None,
+) -> None:
+    """Keep one active individual ID per detection to avoid split profiles."""
+    stmt = sa_update(Annotation).where(
+        Annotation.detection_id == detection_id,
+        Annotation.individual_id.isnot(None),
+    )
+    if keep_annotation_id is not None:
+        stmt = stmt.where(Annotation.id != keep_annotation_id)
+    await db.execute(stmt.values(individual_id=None))
 
 
 @router.post("/", response_model=AnnotationOut, status_code=status.HTTP_201_CREATED)
@@ -48,6 +63,7 @@ async def create_annotation(
     db.add(ann)
     await db.flush()
     if payload.individual_id:
+        await _clear_other_individual_assignments(db, payload.detection_id, ann.id)
         await resolve_reid_suggestions(
             db,
             detection_id=payload.detection_id,
@@ -107,6 +123,13 @@ async def update_annotation(
     ann.annotator = user.email
 
     await db.flush()
+    if "individual_id" in updates:
+        await _clear_other_individual_assignments(
+            db,
+            ann.detection_id,
+            ann.id if ann.individual_id else None,
+        )
+        await db.flush()
     if "individual_id" in updates and ann.individual_id:
         await resolve_reid_suggestions(
             db,

@@ -3,6 +3,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.annotation import Annotation
 from backend.app.models.individual import Individual
 from backend.tests.conftest import auth_header
 
@@ -97,6 +98,87 @@ async def test_annotation_unknown_individual_rejected(client: AsyncClient, test_
         "individual_id": "NOPE-999",
     }, headers=auth_header(test_user))
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reassigning_individual_clears_previous_assignment(
+    client: AsyncClient,
+    test_user,
+    sample_data,
+    db: AsyncSession,
+):
+    db.add_all([
+        Individual(individual_id="02Q2", species="Dasyurus sp | Quoll sp"),
+        Individual(individual_id="03Q1", species="Dasyurus sp | Quoll sp"),
+    ])
+    await db.commit()
+
+    det_id = sample_data["detections"][0].id
+    first = await client.post("/api/annotations/", json={
+        "detection_id": det_id,
+        "is_correct": True,
+        "individual_id": "02Q2",
+    }, headers=auth_header(test_user))
+    assert first.status_code == 201
+
+    second = await client.post("/api/annotations/", json={
+        "detection_id": det_id,
+        "is_correct": True,
+        "individual_id": "03Q1",
+    }, headers=auth_header(test_user))
+    assert second.status_code == 201
+
+    old_gallery = await client.get("/api/stats/individuals/02Q2/gallery")
+    assert old_gallery.status_code == 200
+    assert old_gallery.json()["items"] == []
+
+    new_gallery = await client.get("/api/stats/individuals/03Q1/gallery")
+    assert new_gallery.status_code == 200
+    assert [item["detection_id"] for item in new_gallery.json()["items"]] == [det_id]
+
+    old_ann = await db.get(Annotation, first.json()["id"])
+    new_ann = await db.get(Annotation, second.json()["id"])
+    assert old_ann is not None
+    assert new_ann is not None
+    assert old_ann.individual_id is None
+    assert new_ann.individual_id == "03Q1"
+
+
+@pytest.mark.asyncio
+async def test_unassigning_individual_clears_stale_assignments(
+    client: AsyncClient,
+    test_user,
+    sample_data,
+    db: AsyncSession,
+):
+    db.add_all([
+        Individual(individual_id="02Q2", species="Dasyurus sp | Quoll sp"),
+        Individual(individual_id="03Q1", species="Dasyurus sp | Quoll sp"),
+    ])
+    await db.commit()
+
+    det_id = sample_data["detections"][0].id
+    await client.post("/api/annotations/", json={
+        "detection_id": det_id,
+        "is_correct": True,
+        "individual_id": "02Q2",
+    }, headers=auth_header(test_user))
+    current = await client.post("/api/annotations/", json={
+        "detection_id": det_id,
+        "is_correct": True,
+        "individual_id": "03Q1",
+    }, headers=auth_header(test_user))
+    assert current.status_code == 201
+
+    unassign = await client.put(
+        f"/api/annotations/{current.json()['id']}",
+        json={"individual_id": None},
+        headers=auth_header(test_user),
+    )
+    assert unassign.status_code == 200
+
+    annotations = (await client.get(f"/api/annotations/by-detection/{det_id}")).json()
+    assert all(a["individual_id"] is None for a in annotations)
 
 
 @pytest.mark.asyncio
