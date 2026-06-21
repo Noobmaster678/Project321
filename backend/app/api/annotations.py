@@ -26,6 +26,7 @@ async def create_annotation(
     if not det:
         raise HTTPException(status_code=404, detail="Detection not found")
 
+    existing_assignment_ids: set[str] = set()
     if payload.individual_id:
         ind = (await db.execute(
             select(Individual).where(Individual.individual_id == payload.individual_id)
@@ -35,6 +36,7 @@ async def create_annotation(
                 status_code=404,
                 detail=f"Individual '{payload.individual_id}' does not exist. Create the profile first.",
             )
+        existing_assignment_ids = await _active_individual_ids(db, payload.detection_id)
 
     ann = Annotation(
         detection_id=payload.detection_id,
@@ -48,17 +50,19 @@ async def create_annotation(
     db.add(ann)
     await db.flush()
     if payload.individual_id:
+        await _clear_individual_assignments(db, payload.detection_id, keep_annotation_id=ann.id)
         await resolve_reid_suggestions(
             db,
             detection_id=payload.detection_id,
             chosen_individual_id=payload.individual_id,
             annotator=user.email,
         )
-        await incremental_update_from_detection(
-            db,
-            detection_id=payload.detection_id,
-            individual_id=payload.individual_id,
-        )
+        if payload.individual_id not in existing_assignment_ids:
+            await incremental_update_from_detection(
+                db,
+                detection_id=payload.detection_id,
+                individual_id=payload.individual_id,
+            )
     await db.refresh(ann)
     return AnnotationOut.model_validate(ann)
 
@@ -88,6 +92,7 @@ async def update_annotation(
         raise HTTPException(status_code=404, detail="Annotation not found")
 
     before_individual = ann.individual_id
+    existing_assignment_ids = await _active_individual_ids(db, ann.detection_id, exclude_annotation_id=ann.id)
     updates = payload.model_dump(exclude_unset=True)
     after_individual = updates.get("individual_id", before_individual)
     if after_individual:
@@ -107,18 +112,59 @@ async def update_annotation(
     ann.annotator = user.email
 
     await db.flush()
-    if "individual_id" in updates and ann.individual_id:
-        await resolve_reid_suggestions(
-            db,
-            detection_id=ann.detection_id,
-            chosen_individual_id=ann.individual_id,
-            annotator=user.email,
-        )
-        if ann.individual_id != before_individual:
-            await incremental_update_from_detection(
+    if "individual_id" in updates:
+        if ann.individual_id:
+            await _clear_individual_assignments(db, ann.detection_id, keep_annotation_id=ann.id)
+            await resolve_reid_suggestions(
                 db,
                 detection_id=ann.detection_id,
-                individual_id=ann.individual_id,
+                chosen_individual_id=ann.individual_id,
+                annotator=user.email,
             )
+            if ann.individual_id != before_individual and ann.individual_id not in existing_assignment_ids:
+                await incremental_update_from_detection(
+                    db,
+                    detection_id=ann.detection_id,
+                    individual_id=ann.individual_id,
+                )
+        else:
+            await _clear_individual_assignments(db, ann.detection_id)
     await db.refresh(ann)
     return AnnotationOut.model_validate(ann)
+
+
+async def _active_individual_ids(
+    db: AsyncSession,
+    detection_id: int,
+    exclude_annotation_id: int | None = None,
+) -> set[str]:
+    """Return the non-empty individual IDs currently assigned to a detection."""
+    query = select(Annotation.individual_id).where(
+        Annotation.detection_id == detection_id,
+        Annotation.individual_id.isnot(None),
+        Annotation.individual_id != "",
+    )
+    if exclude_annotation_id is not None:
+        query = query.where(Annotation.id != exclude_annotation_id)
+    result = await db.execute(query)
+    return {str(iid) for iid in result.scalars().all()}
+
+
+async def _clear_individual_assignments(
+    db: AsyncSession,
+    detection_id: int,
+    keep_annotation_id: int | None = None,
+) -> None:
+    """Keep at most one active individual assignment for a detection."""
+    query = select(Annotation).where(
+        Annotation.detection_id == detection_id,
+        Annotation.individual_id.isnot(None),
+        Annotation.individual_id != "",
+    )
+    if keep_annotation_id is not None:
+        query = query.where(Annotation.id != keep_annotation_id)
+    rows = (await db.execute(query)).scalars().all()
+    for row in rows:
+        row.individual_id = None
+    if rows:
+        await db.flush()
