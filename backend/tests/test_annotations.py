@@ -88,6 +88,67 @@ async def test_annotation_individual_assignment(client: AsyncClient, test_user, 
 
 
 @pytest.mark.asyncio
+async def test_individual_assignment_replaces_stale_assignment(client: AsyncClient, test_user, sample_data, db: AsyncSession):
+    db.add_all([
+        Individual(individual_id="02Q2", species="Dasyurus sp | Quoll sp"),
+        Individual(individual_id="03Q3", species="Dasyurus sp | Quoll sp"),
+    ])
+    await db.commit()
+
+    det_id = sample_data["detections"][0].id
+    first_resp = await client.post("/api/annotations/", json={
+        "detection_id": det_id,
+        "is_correct": True,
+        "individual_id": "02Q2",
+    }, headers=auth_header(test_user))
+    assert first_resp.status_code == 201
+
+    second_resp = await client.post("/api/annotations/", json={
+        "detection_id": det_id,
+        "is_correct": True,
+        "individual_id": "03Q3",
+    }, headers=auth_header(test_user))
+    assert second_resp.status_code == 201
+
+    resp = await client.get(f"/api/annotations/by-detection/{det_id}")
+    active_ids = [a["individual_id"] for a in resp.json() if a["individual_id"]]
+    assert active_ids == ["03Q3"]
+
+
+@pytest.mark.asyncio
+async def test_unassign_clears_all_stale_individual_assignments(client: AsyncClient, test_user, sample_data, db: AsyncSession):
+    db.add_all([
+        Individual(individual_id="02Q2", species="Dasyurus sp | Quoll sp"),
+        Individual(individual_id="03Q3", species="Dasyurus sp | Quoll sp"),
+    ])
+    await db.commit()
+
+    det_id = sample_data["detections"][0].id
+    await client.post("/api/annotations/", json={
+        "detection_id": det_id,
+        "is_correct": True,
+        "individual_id": "02Q2",
+    }, headers=auth_header(test_user))
+    create_resp = await client.post("/api/annotations/", json={
+        "detection_id": det_id,
+        "is_correct": True,
+        "individual_id": "03Q3",
+    }, headers=auth_header(test_user))
+    ann_id = create_resp.json()["id"]
+
+    unassign_resp = await client.put(
+        f"/api/annotations/{ann_id}",
+        json={"individual_id": None},
+        headers=auth_header(test_user),
+    )
+    assert unassign_resp.status_code == 200
+
+    resp = await client.get(f"/api/annotations/by-detection/{det_id}")
+    active_ids = [a["individual_id"] for a in resp.json() if a["individual_id"]]
+    assert active_ids == []
+
+
+@pytest.mark.asyncio
 async def test_annotation_unknown_individual_rejected(client: AsyncClient, test_user, sample_data):
     """Assigning a detection to a non-existent profile returns 404."""
     det_id = sample_data["detections"][0].id
