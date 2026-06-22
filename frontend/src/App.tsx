@@ -92,7 +92,7 @@ function AppShell() {
                     <Route path="/individuals/species/:speciesKey/individuals" element={<SpeciesByIndividual />} />
                     <Route path="/individuals/species/:speciesKey/individuals/:individualId" element={<IndividualImages />} />
                     <Route path="/upload" element={<RequireAuth><BatchUpload /></RequireAuth>} />
-                    <Route path="/reports" element={<Reports />} />
+                    <Route path="/reports" element={<RequireAuth><Reports /></RequireAuth>} />
                     {PENDING_REVIEW_ENABLED && (
                         <Route path="/pending-review" element={<RequireAuth><PendingReviewPage /></RequireAuth>} />
                     )}
@@ -663,6 +663,7 @@ function ReviewCategoryCard({ title, description, tagClass, imageCount, onReview
    DASHBOARD (Home — WildlifeTracker approved design)
    ============================================================ */
 function Dashboard() {
+    const { user } = useAuth();
     const [stats, setStats] = useState<DashboardStats | null>(null);
     const [report, setReport] = useState<ReportData | null>(null);
     const [cameras, setCameras] = useState<CameraStat[]>([]);
@@ -679,7 +680,7 @@ function Dashboard() {
             try {
                 const [s, r, cam, sp, det] = await Promise.all([
                     fetchStats(),
-                    fetchReport(),
+                    user ? fetchReport() : Promise.resolve(null),
                     fetchCameraStats(),
                     fetchSpeciesCounts(),
                     fetchDetections({ per_page: 5 }),
@@ -701,7 +702,7 @@ function Dashboard() {
         loadAll(true);
         const pollId = window.setInterval(() => loadAll(false), 5000);
         return () => { alive = false; window.clearInterval(pollId); };
-    }, []);
+    }, [user]);
 
     if (loading) return <LoadingState />;
     if (error) return <ErrorState message={error} />;
