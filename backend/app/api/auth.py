@@ -56,7 +56,11 @@ async def register(
         )
 
     total_users = (await db.execute(select(func.count(User.id)))).scalar() or 0
-    if not settings.OPEN_REGISTRATION and total_users > 0 and requester is None:
+    if (
+        not settings.OPEN_REGISTRATION
+        and total_users > 0
+        and (requester is None or requester.role != "admin")
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Open registration is disabled",

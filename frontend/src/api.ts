@@ -697,8 +697,17 @@ export function storageUrl(path: string): string {
 // ---- Missed detection (user correction: "model said no animal but there is one")
 export async function createMissedDetection(
     imageId: number,
-    payload: { bbox_x: number; bbox_y: number; bbox_w: number; bbox_h: number; species: string; flag_for_retraining?: boolean },
-): Promise<{ id: number; image_id: number; species: string; created_at: string | null }> {
+    payload: {
+        bbox_x: number;
+        bbox_y: number;
+        bbox_w: number;
+        bbox_h: number;
+        species: string;
+        individual_id?: string;
+        notes?: string;
+        flag_for_retraining?: boolean;
+    },
+): Promise<{ id: number; image_id: number; species: string; individual_id?: string | null; notes?: string | null; created_at: string | null }> {
     const res = await apiFetch(`${API_BASE}/images/${imageId}/missed-detection`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

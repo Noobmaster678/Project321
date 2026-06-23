@@ -100,6 +100,50 @@ async def test_annotation_unknown_individual_rejected(client: AsyncClient, test_
 
 
 @pytest.mark.asyncio
+async def test_reassign_and_unassign_leave_no_stale_individual_ids(
+    client: AsyncClient,
+    test_user,
+    sample_data,
+    db: AsyncSession,
+):
+    db.add_all([
+        Individual(individual_id="01Q1", species="Dasyurus sp | Quoll sp"),
+        Individual(individual_id="02Q2", species="Dasyurus sp | Quoll sp"),
+    ])
+    await db.commit()
+
+    det_id = sample_data["detections"][0].id
+    first = await client.post("/api/annotations/", json={
+        "detection_id": det_id,
+        "is_correct": True,
+        "individual_id": "01Q1",
+    }, headers=auth_header(test_user))
+    assert first.status_code == 201
+
+    second = await client.post("/api/annotations/", json={
+        "detection_id": det_id,
+        "is_correct": True,
+        "individual_id": "02Q2",
+    }, headers=auth_header(test_user))
+    assert second.status_code == 201
+
+    assigned = await client.get(f"/api/annotations/by-detection/{det_id}")
+    active_ids = [a["individual_id"] for a in assigned.json() if a.get("individual_id")]
+    assert active_ids == ["02Q2"]
+
+    unassign = await client.put(
+        f"/api/annotations/{second.json()['id']}",
+        json={"individual_id": None},
+        headers=auth_header(test_user),
+    )
+    assert unassign.status_code == 200
+
+    assigned = await client.get(f"/api/annotations/by-detection/{det_id}")
+    active_ids = [a["individual_id"] for a in assigned.json() if a.get("individual_id")]
+    assert active_ids == []
+
+
+@pytest.mark.asyncio
 async def test_annotation_flag_retraining(client: AsyncClient, test_user, sample_data):
     det_id = sample_data["detections"][1].id
     resp = await client.post("/api/annotations/", json={
