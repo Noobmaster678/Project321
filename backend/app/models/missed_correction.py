@@ -15,6 +15,8 @@ class MissedDetectionCorrection(Base):
     bbox_w = Column(Float, nullable=False)
     bbox_h = Column(Float, nullable=False)
     species = Column(String, nullable=False)
+    individual_id = Column(String, nullable=True)
+    notes = Column(String, nullable=True)
     annotator = Column(String, nullable=True)
     flag_for_retraining = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

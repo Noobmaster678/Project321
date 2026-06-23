@@ -88,6 +88,29 @@ async def test_get_image_not_found(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_create_missed_detection_persists_individual_id_and_notes(client: AsyncClient, test_user, sample_data):
+    img_id = sample_data["images"][0].id
+    resp = await client.post(
+        f"/api/images/{img_id}/missed-detection",
+        json={
+            "bbox_x": 0.1,
+            "bbox_y": 0.2,
+            "bbox_w": 0.3,
+            "bbox_h": 0.4,
+            "species": "Dasyurus sp | Quoll sp",
+            "individual_id": "02Q2",
+            "notes": "Distinct tail spot pattern",
+            "flag_for_retraining": True,
+        },
+        headers=auth_header(test_user),
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["individual_id"] == "02Q2"
+    assert data["notes"] == "Distinct tail spot pattern"
+
+
+@pytest.mark.asyncio
 async def test_images_by_species(client: AsyncClient, sample_data):
     resp = await client.get("/api/images/by-species/quoll")
     data = resp.json()

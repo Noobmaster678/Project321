@@ -2,6 +2,7 @@
 import pytest
 from httpx import AsyncClient
 
+from backend.app.config import settings
 from backend.tests.conftest import auth_header
 
 
@@ -34,6 +35,25 @@ async def test_register_short_password(client: AsyncClient):
 async def test_register_invalid_role(client: AsyncClient):
     resp = await client.post("/api/auth/register", json={"email": "bad@example.com", "password": "password123", "role": "superuser"})
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_closed_registration_requires_admin_for_existing_site(client: AsyncClient, test_user, admin_user, monkeypatch):
+    monkeypatch.setattr(settings, "OPEN_REGISTRATION", False)
+
+    reviewer_resp = await client.post(
+        "/api/auth/register",
+        json={"email": "blocked@example.com", "password": "password123", "role": "reviewer"},
+        headers=auth_header(test_user),
+    )
+    assert reviewer_resp.status_code == 403
+
+    admin_resp = await client.post(
+        "/api/auth/register",
+        json={"email": "allowed@example.com", "password": "password123", "role": "reviewer"},
+        headers=auth_header(admin_user),
+    )
+    assert admin_resp.status_code == 201
 
 
 @pytest.mark.asyncio

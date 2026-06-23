@@ -209,6 +209,8 @@ async def create_missed_detection(
         bbox_w=payload.bbox_w,
         bbox_h=payload.bbox_h,
         species=payload.species,
+        individual_id=payload.individual_id,
+        notes=payload.notes,
         annotator=user.email,
         flag_for_retraining=payload.flag_for_retraining,
     )

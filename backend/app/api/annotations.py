@@ -15,6 +15,24 @@ from backend.app.utils.dependencies import get_current_user
 router = APIRouter(prefix="/annotations", tags=["Annotations"])
 
 
+async def _clear_individual_assignments(
+    db: AsyncSession,
+    detection_id: int,
+    exclude_annotation_id: int | None = None,
+) -> None:
+    """Keep only one active individual assignment per detection."""
+    result = await db.execute(
+        select(Annotation).where(
+            Annotation.detection_id == detection_id,
+            Annotation.individual_id.isnot(None),
+        )
+    )
+    for existing in result.scalars().all():
+        if exclude_annotation_id is not None and existing.id == exclude_annotation_id:
+            continue
+        existing.individual_id = None
+
+
 @router.post("/", response_model=AnnotationOut, status_code=status.HTTP_201_CREATED)
 async def create_annotation(
     payload: AnnotationCreate,
@@ -35,6 +53,7 @@ async def create_annotation(
                 status_code=404,
                 detail=f"Individual '{payload.individual_id}' does not exist. Create the profile first.",
             )
+        await _clear_individual_assignments(db, payload.detection_id)
 
     ann = Annotation(
         detection_id=payload.detection_id,
@@ -101,6 +120,16 @@ async def update_annotation(
                 status_code=404,
                 detail=f"Individual '{after_individual}' does not exist. Create the profile first.",
             )
+
+    if "individual_id" in updates:
+        if after_individual:
+            await _clear_individual_assignments(
+                db,
+                detection_id=ann.detection_id,
+                exclude_annotation_id=ann.id,
+            )
+        else:
+            await _clear_individual_assignments(db, detection_id=ann.detection_id)
 
     for field, value in updates.items():
         setattr(ann, field, value)

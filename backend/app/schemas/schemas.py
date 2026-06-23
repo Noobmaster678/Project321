@@ -165,6 +165,8 @@ class MissedDetectionCreate(BaseModel):
     bbox_w: float
     bbox_h: float
     species: str
+    individual_id: Optional[str] = None
+    notes: Optional[str] = None
     flag_for_retraining: bool = True
 
 
@@ -176,6 +178,8 @@ class MissedDetectionOut(BaseModel):
     bbox_w: float
     bbox_h: float
     species: str
+    individual_id: Optional[str] = None
+    notes: Optional[str] = None
     annotator: Optional[str] = None
     flag_for_retraining: bool = True
     created_at: Optional[datetime] = None
