@@ -187,7 +187,7 @@ async def _run_process_batch(job_id: int, image_ids: list[int]):
                     await db.commit()
 
                 job = (await db.execute(select(ProcessingJob).where(ProcessingJob.id == job_id))).scalar_one_or_none()
-                if job:
+                if job and image and image.processed and (job.processed_images + job.failed_images) < job.total_images:
                     job.processed_images += 1
                     await db.commit()
         except Exception as exc:

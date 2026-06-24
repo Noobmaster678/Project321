@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, useParams, useSearchParams, useNavigate, Navigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
@@ -43,6 +43,17 @@ function individualMatchesSpeciesPage(ind: IndividualData, speciesKeyDecoded: st
     const d = speciesKeyDecoded.toLowerCase().trim();
     const sp = ind.species.toLowerCase();
     if (!d) return true;
+    if (sp.includes(d) || d.includes(sp)) return true;
+    if (/\bquoll\b/.test(d) && /\bquoll\b/.test(sp)) return true;
+    if (d.includes('dasyurus') && (sp.includes('quoll') || sp.includes('dasyurus'))) return true;
+    return false;
+}
+
+function detectionMatchesSpeciesPage(det: Pick<Detection, 'species'>, speciesKeyDecoded: string): boolean {
+    const d = speciesKeyDecoded.toLowerCase().trim();
+    const sp = (det.species || '').toLowerCase().trim();
+    if (!d) return true;
+    if (!sp) return false;
     if (sp.includes(d) || d.includes(sp)) return true;
     if (/\bquoll\b/.test(d) && /\bquoll\b/.test(sp)) return true;
     if (d.includes('dasyurus') && (sp.includes('quoll') || sp.includes('dasyurus'))) return true;
@@ -2287,6 +2298,16 @@ function SpeciesImages() {
     const [bulkAssignId, setBulkAssignId] = useState('');
     const [bulkAssigning, setBulkAssigning] = useState(false);
     const [bulkAssignMsg, setBulkAssignMsg] = useState<string | null>(null);
+    const selectedDetailTokenRef = useRef(0);
+
+    const filterPageDetections = useCallback(
+        (dets: Detection[]) => dets.filter((det) => detectionMatchesSpeciesPage(det, decoded)),
+        [decoded],
+    );
+
+    useLayoutEffect(() => {
+        selectedDetailTokenRef.current += 1;
+    }, [selected?.id]);
 
     useEffect(() => {
         if (!decoded) return;
@@ -2297,18 +2318,22 @@ function SpeciesImages() {
 
     const refreshSelectedDetail = useCallback(async () => {
         if (!selected) return;
+        const requestToken = ++selectedDetailTokenRef.current;
         try {
             const detail: any = await fetchImageDetail(selected.id);
-            setDetections(detail.detections || []);
+            if (requestToken !== selectedDetailTokenRef.current) return;
+            setDetections(filterPageDetections((detail.detections || []) as Detection[]));
         } catch {
-            setDetections([]);
+            if (requestToken === selectedDetailTokenRef.current) setDetections([]);
         }
-    }, [selected?.id]);
+    }, [selected?.id, filterPageDetections]);
 
     useEffect(() => {
-        if (!selected) { setDetections([]); return; }
+        if (!selected) { setDetections([]); setFocusedDetId(null); return; }
+        setDetections([]);
+        setFocusedDetId(null);
         refreshSelectedDetail();
-    }, [selected?.id]);
+    }, [selected?.id, refreshSelectedDetail]);
 
     useEffect(() => {
         if (!selected) {
@@ -2354,21 +2379,31 @@ function SpeciesImages() {
     }, [compareId]);
 
     useEffect(() => {
-        if (!isQuoll || focusedDetId == null) {
+        if (!isQuoll || focusedDetId == null || !user) {
             setReidSuggestions(null);
             setReidSuggestionsError(null);
+            setReidSuggestionsLoading(false);
             return;
         }
+        let cancelled = false;
+        const suggestionDetId = focusedDetId;
         setReidSuggestionsLoading(true);
         setReidSuggestionsError(null);
-        fetchReidSuggestions(focusedDetId, 5)
-            .then(setReidSuggestions)
+        fetchReidSuggestions(suggestionDetId, 5)
+            .then((result) => {
+                if (cancelled || result.detection_id !== suggestionDetId) return;
+                setReidSuggestions(result);
+            })
             .catch((e: any) => {
+                if (cancelled) return;
                 setReidSuggestions(null);
                 setReidSuggestionsError(e?.message || 'No suggestions available');
             })
-            .finally(() => setReidSuggestionsLoading(false));
-    }, [isQuoll, focusedDetId]);
+            .finally(() => {
+                if (!cancelled) setReidSuggestionsLoading(false);
+            });
+        return () => { cancelled = true; };
+    }, [isQuoll, focusedDetId, user]);
 
     // Auto-fill the manual assign input with the current assignment when focus changes.
     useEffect(() => {
@@ -2400,6 +2435,7 @@ function SpeciesImages() {
 
     if (loading) return <LoadingState />;
     const focused = focusedDetId != null ? detections.find((d) => d.id === focusedDetId) : null;
+    const suggestionsForFocusedDetection = reidSuggestions?.detection_id === focusedDetId ? reidSuggestions : null;
     const currentAssigned = (() => {
         if (!focused?.annotations || focused.annotations.length === 0) return null;
         const withId = focused.annotations.filter((a) => a && a.individual_id);
@@ -2597,7 +2633,7 @@ function SpeciesImages() {
                                     for (const imgId of Array.from(selectedIds)) {
                                         try {
                                             const detail: any = await fetchImageDetail(imgId);
-                                            const dets: Detection[] = detail.detections || [];
+                                            const dets = filterPageDetections((detail.detections || []) as Detection[]);
                                             for (const det of dets) {
                                                 await createAnnotation({ detection_id: det.id, is_correct: true, individual_id: bulkAssignId.trim() });
                                                 assigned++;
@@ -2757,11 +2793,11 @@ function SpeciesImages() {
                                                 <div className="tag tag-muted">Scoring similarities…</div>
                                             ) : reidSuggestionsError ? (
                                                 <div className="tag tag-muted">{reidSuggestionsError}</div>
-                                            ) : !reidSuggestions || reidSuggestions.suggestions.length === 0 ? (
+                                            ) : !suggestionsForFocusedDetection || suggestionsForFocusedDetection.suggestions.length === 0 ? (
                                                 <div className="tag tag-muted">No suggested individuals for this detection yet.</div>
                                             ) : (
                                                 <div style={{ display: 'grid', gap: '0.45rem' }}>
-                                                    {reidSuggestions.suggestions.map((s) => {
+                                                    {suggestionsForFocusedDetection.suggestions.map((s) => {
                                                         const isCurrent = s.individual_id === currentAssigned;
                                                         return (
                                                             <button
