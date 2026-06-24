@@ -392,7 +392,7 @@ export async function fetchReidInfo(): Promise<Record<string, unknown>> {
 }
 
 export async function fetchReidSuggestions(detectionId: number, topK = 5): Promise<ReidSuggestionResponse> {
-    const res = await fetch(`${API_BASE}/reid/detections/${detectionId}/suggestions?top_k=${topK}`);
+    const res = await apiFetch(`${API_BASE}/reid/detections/${detectionId}/suggestions?top_k=${topK}`);
     if (!res.ok) throw new Error('Failed to fetch re-ID suggestions');
     return res.json();
 }
