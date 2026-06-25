@@ -49,6 +49,16 @@ function individualMatchesSpeciesPage(ind: IndividualData, speciesKeyDecoded: st
     return false;
 }
 
+function detectionMatchesSpeciesPage(det: Detection, speciesKeyDecoded: string): boolean {
+    const d = speciesKeyDecoded.toLowerCase().trim();
+    const sp = (det.species || det.category || '').toLowerCase();
+    if (!d) return true;
+    if (sp.includes(d) || d.includes(sp)) return true;
+    if (/\bquoll\b/.test(d) && /\bquoll\b/.test(sp)) return true;
+    if (d.includes('dasyurus') && (sp.includes('quoll') || sp.includes('dasyurus'))) return true;
+    return false;
+}
+
 /** Show Camera / Filename instead of just filename to disambiguate Reconyx images */
 function displayImageName(img: { filename: string; file_path: string }): string {
     if (!img.file_path) return img.filename;
@@ -2287,6 +2297,8 @@ function SpeciesImages() {
     const [bulkAssignId, setBulkAssignId] = useState('');
     const [bulkAssigning, setBulkAssigning] = useState(false);
     const [bulkAssignMsg, setBulkAssignMsg] = useState<string | null>(null);
+    const detailRequestRef = useRef(0);
+    const reidSuggestionRequestRef = useRef(0);
 
     useEffect(() => {
         if (!decoded) return;
@@ -2296,43 +2308,56 @@ function SpeciesImages() {
     }, [decoded, page, unassignedOnly]);
 
     const refreshSelectedDetail = useCallback(async () => {
-        if (!selected) return;
-        try {
-            const detail: any = await fetchImageDetail(selected.id);
-            setDetections(detail.detections || []);
-        } catch {
-            setDetections([]);
-        }
-    }, [selected?.id]);
-
-    useEffect(() => {
-        if (!selected) { setDetections([]); return; }
-        refreshSelectedDetail();
-    }, [selected?.id]);
-
-    useEffect(() => {
         if (!selected) {
+            detailRequestRef.current++;
+            setDetections([]);
             setFocusedDetId(null);
-            setAssignId('');
-            setAssignNotes('');
-            setAssignMsg(null);
-            setCompareId('');
-            setCompareGallery([]);
-            setSplitOpen(false);
-            setReidSuggestions(null);
-            setReidSuggestionsError(null);
-            setCreateOpen(false);
-            setCreateMsg(null);
-            setNewIndividualId('');
-            setNewName('');
-            setRefLeft(null);
-            setRefRight(null);
             return;
         }
-        // When an image opens, default focus to first detection if any.
-        if (detections.length === 1) setFocusedDetId(detections[0].id);
-        if (focusedDetId == null && detections.length > 0) setFocusedDetId(detections[0].id);
-    }, [selected?.id, detections.length]);
+        const requestId = ++detailRequestRef.current;
+        const selectedId = selected.id;
+        try {
+            const detail: any = await fetchImageDetail(selectedId);
+            if (detailRequestRef.current !== requestId) return;
+            const nextDetections = ((detail.detections || []) as Detection[])
+                .filter((det) => det.image_id === selectedId);
+            setDetections(nextDetections);
+            setFocusedDetId((current) => (
+                current != null && nextDetections.some((det) => det.id === current)
+                    ? current
+                    : nextDetections[0]?.id ?? null
+            ));
+        } catch {
+            if (detailRequestRef.current !== requestId) return;
+            setDetections([]);
+            setFocusedDetId(null);
+        }
+    }, [selected?.id]);
+
+    useEffect(() => {
+        setDetections([]);
+        setFocusedDetId(null);
+        setAssignId('');
+        setAssignNotes('');
+        setAssignMsg(null);
+        setCompareId('');
+        setCompareGallery([]);
+        setSplitOpen(false);
+        setReidSuggestions(null);
+        setReidSuggestionsError(null);
+        setReidSuggestionsLoading(false);
+        setCreateOpen(false);
+        setCreateMsg(null);
+        setNewIndividualId('');
+        setNewName('');
+        setRefLeft(null);
+        setRefRight(null);
+        if (!selected) {
+            detailRequestRef.current++;
+            return;
+        }
+        refreshSelectedDetail();
+    }, [selected?.id, refreshSelectedDetail]);
 
     useEffect(() => {
         if (!isQuoll) return;
@@ -2354,21 +2379,34 @@ function SpeciesImages() {
     }, [compareId]);
 
     useEffect(() => {
-        if (!isQuoll || focusedDetId == null) {
+        const requestId = ++reidSuggestionRequestRef.current;
+        const focusedDetection = focusedDetId == null
+            ? null
+            : detections.find((det) => det.id === focusedDetId && det.image_id === selected?.id);
+        if (!isQuoll || !focusedDetection) {
             setReidSuggestions(null);
             setReidSuggestionsError(null);
+            setReidSuggestionsLoading(false);
             return;
         }
+        const detectionId = focusedDetection.id;
         setReidSuggestionsLoading(true);
         setReidSuggestionsError(null);
-        fetchReidSuggestions(focusedDetId, 5)
-            .then(setReidSuggestions)
+        fetchReidSuggestions(detectionId, 5)
+            .then((suggestions) => {
+                if (reidSuggestionRequestRef.current !== requestId) return;
+                if (suggestions.detection_id !== detectionId) return;
+                setReidSuggestions(suggestions);
+            })
             .catch((e: any) => {
+                if (reidSuggestionRequestRef.current !== requestId) return;
                 setReidSuggestions(null);
                 setReidSuggestionsError(e?.message || 'No suggestions available');
             })
-            .finally(() => setReidSuggestionsLoading(false));
-    }, [isQuoll, focusedDetId]);
+            .finally(() => {
+                if (reidSuggestionRequestRef.current === requestId) setReidSuggestionsLoading(false);
+            });
+    }, [isQuoll, focusedDetId, selected?.id, detections]);
 
     // Auto-fill the manual assign input with the current assignment when focus changes.
     useEffect(() => {
@@ -2597,7 +2635,8 @@ function SpeciesImages() {
                                     for (const imgId of Array.from(selectedIds)) {
                                         try {
                                             const detail: any = await fetchImageDetail(imgId);
-                                            const dets: Detection[] = detail.detections || [];
+                                            const dets: Detection[] = ((detail.detections || []) as Detection[])
+                                                .filter((det) => det.image_id === imgId && detectionMatchesSpeciesPage(det, decoded));
                                             for (const det of dets) {
                                                 await createAnnotation({ detection_id: det.id, is_correct: true, individual_id: bulkAssignId.trim() });
                                                 assigned++;

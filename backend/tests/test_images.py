@@ -1,5 +1,7 @@
 """Tests for image listing, detail, and upload endpoints."""
 import io
+from pathlib import Path
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -132,6 +134,99 @@ async def test_upload_single_duplicate_filename_gets_suffix(client: AsyncClient,
     assert resp2.status_code == 200
     assert resp1.json()["file_path"] != resp2.json()["file_path"]
     assert resp2.json()["filename"].startswith("same_name_")
+
+
+@pytest.mark.asyncio
+async def test_upload_single_sanitizes_absolute_filename(client: AsyncClient, test_user, tmp_path, monkeypatch):
+    from backend.app.api import images as images_api
+    from backend.worker import tasks
+
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    monkeypatch.setattr(images_api, "UPLOAD_DIR", upload_root)
+    monkeypatch.setattr(tasks.process_image_task, "delay", lambda image_id: None)
+
+    resp = await client.post(
+        "/api/images/upload",
+        files={"file": ("/outside/escape.jpg", io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x02" * 100), "image/jpeg")},
+        headers=auth_header(test_user),
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert not Path(data["file_path"]).is_absolute()
+    assert data["file_path"] == "uploads/outside/escape.jpg"
+    assert (upload_root / "outside" / "escape.jpg").exists()
+
+
+@pytest.mark.asyncio
+async def test_upload_single_commits_before_dispatch(client: AsyncClient, test_user, tmp_path, monkeypatch):
+    from backend.app.api import images as images_api
+    from backend.worker import tasks
+
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    monkeypatch.setattr(images_api, "UPLOAD_DIR", upload_root)
+
+    events: list[str] = []
+    original_commit = AsyncSession.commit
+
+    async def recording_commit(self):
+        events.append("commit")
+        return await original_commit(self)
+
+    def recording_delay(image_id: int):
+        events.append("delay")
+
+    monkeypatch.setattr(AsyncSession, "commit", recording_commit)
+    monkeypatch.setattr(tasks.process_image_task, "delay", recording_delay)
+
+    resp = await client.post(
+        "/api/images/upload",
+        files={"file": ("commit_order.jpg", io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x03" * 100), "image/jpeg")},
+        headers=auth_header(test_user),
+    )
+
+    assert resp.status_code == 200
+    assert "delay" in events
+    assert events.index("commit") < events.index("delay")
+
+
+@pytest.mark.asyncio
+async def test_upload_batch_commits_before_dispatch(client: AsyncClient, test_user, tmp_path, monkeypatch):
+    from backend.app.api import images as images_api
+    from backend.worker import tasks
+
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    monkeypatch.setattr(images_api, "UPLOAD_DIR", upload_root)
+
+    events: list[str] = []
+    original_commit = AsyncSession.commit
+
+    async def recording_commit(self):
+        events.append("commit")
+        return await original_commit(self)
+
+    class FakeTask:
+        id = "fake-task-id"
+
+    def recording_delay(job_id: int, image_ids: list[int]):
+        events.append("delay")
+        return FakeTask()
+
+    monkeypatch.setattr(AsyncSession, "commit", recording_commit)
+    monkeypatch.setattr(tasks.process_batch_task, "delay", recording_delay)
+
+    resp = await client.post(
+        "/api/images/upload-batch",
+        files=[("files", ("batch_order.jpg", io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x04" * 100), "image/jpeg"))],
+        headers=auth_header(test_user),
+    )
+
+    assert resp.status_code == 200
+    assert "delay" in events
+    assert events.index("commit") < events.index("delay")
 
 
 @pytest.mark.asyncio

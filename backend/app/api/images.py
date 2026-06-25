@@ -36,8 +36,8 @@ _local_batch_tasks: dict[int, asyncio.Task] = {}
 
 def _sanitize_upload_path(raw_name: str | None) -> Path:
     """Normalize client-provided upload name to a safe relative path."""
-    src = Path(raw_name or "unknown.jpg")
-    parts = [p for p in src.parts if p not in ("", ".", "..")]
+    raw = (raw_name or "unknown.jpg").replace("\\", "/")
+    parts = [p for p in raw.split("/") if p not in ("", ".", "..")]
     if not parts:
         return Path("unknown.jpg")
     return Path(*parts)
@@ -291,6 +291,8 @@ async def upload_image(
     db.add(image)
     await db.flush()
     await db.refresh(image)
+    response = ImageOut.model_validate(image)
+    await db.commit()
 
     try:
         from backend.worker.tasks import process_image_task
@@ -298,7 +300,7 @@ async def upload_image(
     except Exception:
         asyncio.create_task(_run_single_locally(image.id))
 
-    return ImageOut.model_validate(image)
+    return response
 
 
 def _extract_camera_name(relative_path: str) -> str | None:
@@ -523,12 +525,18 @@ async def upload_batch(
         db.add(job)
         await db.flush()
 
+    job_id_value = job.id
+    response = BatchUploadResponse(job_id=job_id_value, files_received=len(image_ids), status="queued")
+    await db.commit()
+
     try:
         from backend.worker.tasks import process_batch_task
-        task = process_batch_task.delay(job.id, image_ids)
+        task = process_batch_task.delay(job_id_value, image_ids)
         job.celery_task_id = task.id
+        await db.commit()
     except Exception:
         job.celery_task_id = "local-fallback"
-        _enqueue_local_batch(job.id, image_ids)
+        await db.commit()
+        _enqueue_local_batch(job_id_value, image_ids)
 
-    return BatchUploadResponse(job_id=job.id, files_received=len(image_ids), status="queued")
+    return response
