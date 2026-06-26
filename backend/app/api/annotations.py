@@ -35,6 +35,16 @@ async def create_annotation(
                 status_code=404,
                 detail=f"Individual '{payload.individual_id}' does not exist. Create the profile first.",
             )
+        existing_assignments = (
+            await db.execute(
+                select(Annotation).where(
+                    Annotation.detection_id == payload.detection_id,
+                    Annotation.individual_id.isnot(None),
+                )
+            )
+        ).scalars().all()
+        for existing in existing_assignments:
+            existing.individual_id = None
 
     ann = Annotation(
         detection_id=payload.detection_id,
@@ -101,6 +111,19 @@ async def update_annotation(
                 status_code=404,
                 detail=f"Individual '{after_individual}' does not exist. Create the profile first.",
             )
+
+    if "individual_id" in updates:
+        existing_assignments = (
+            await db.execute(
+                select(Annotation).where(
+                    Annotation.detection_id == ann.detection_id,
+                    Annotation.individual_id.isnot(None),
+                )
+            )
+        ).scalars().all()
+        for existing in existing_assignments:
+            if existing.id != ann.id or updates["individual_id"] is None:
+                existing.individual_id = None
 
     for field, value in updates.items():
         setattr(ann, field, value)

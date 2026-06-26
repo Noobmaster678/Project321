@@ -49,6 +49,16 @@ function individualMatchesSpeciesPage(ind: IndividualData, speciesKeyDecoded: st
     return false;
 }
 
+function detectionMatchesSpeciesPage(det: Pick<Detection, 'species'>, speciesKeyDecoded: string): boolean {
+    const d = speciesKeyDecoded.toLowerCase().trim();
+    const sp = (det.species || '').toLowerCase();
+    if (!d) return true;
+    if (sp.includes(d) || d.includes(sp)) return true;
+    if (/\bquoll\b/.test(d) && /\bquoll\b/.test(sp)) return true;
+    if (d.includes('dasyurus') && (sp.includes('quoll') || sp.includes('dasyurus'))) return true;
+    return false;
+}
+
 /** Show Camera / Filename instead of just filename to disambiguate Reconyx images */
 function displayImageName(img: { filename: string; file_path: string }): string {
     if (!img.file_path) return img.filename;
@@ -335,8 +345,8 @@ function PendingReviewPage() {
                 const res = await fetchImages({ has_animal: false, per_page: 50, page, camera_id: cameraFilter });
                 setFilterImages(res);
             } else if (cat === 'assign-individual') {
-                const res = await fetchDetections({ species: 'quoll', review_status: 'verified', per_page: 50, page, camera_id: cameraFilter });
-                setFilterDetections(res.items.filter((d: any) => !(d.annotations ?? []).some((a: any) => a.individual_id)));
+                const res = await fetchDetections({ species: 'quoll', review_status: 'needs_individual', per_page: 50, page, camera_id: cameraFilter });
+                setFilterDetections(res.items);
             }
         } catch { }
         setFilterLoading(false);
@@ -2287,6 +2297,8 @@ function SpeciesImages() {
     const [bulkAssignId, setBulkAssignId] = useState('');
     const [bulkAssigning, setBulkAssigning] = useState(false);
     const [bulkAssignMsg, setBulkAssignMsg] = useState<string | null>(null);
+    const detailRequestSeq = useRef(0);
+    const reidRequestSeq = useRef(0);
 
     useEffect(() => {
         if (!decoded) return;
@@ -2297,16 +2309,28 @@ function SpeciesImages() {
 
     const refreshSelectedDetail = useCallback(async () => {
         if (!selected) return;
+        const requestId = ++detailRequestSeq.current;
         try {
             const detail: any = await fetchImageDetail(selected.id);
-            setDetections(detail.detections || []);
+            if (requestId === detailRequestSeq.current) {
+                setDetections(detail.detections || []);
+            }
         } catch {
-            setDetections([]);
+            if (requestId === detailRequestSeq.current) {
+                setDetections([]);
+            }
         }
     }, [selected?.id]);
 
     useEffect(() => {
-        if (!selected) { setDetections([]); return; }
+        if (!selected) {
+            detailRequestSeq.current++;
+            setDetections([]);
+            setFocusedDetId(null);
+            return;
+        }
+        setDetections([]);
+        setFocusedDetId(null);
         refreshSelectedDetail();
     }, [selected?.id]);
 
@@ -2329,10 +2353,11 @@ function SpeciesImages() {
             setRefRight(null);
             return;
         }
-        // When an image opens, default focus to first detection if any.
-        if (detections.length === 1) setFocusedDetId(detections[0].id);
-        if (focusedDetId == null && detections.length > 0) setFocusedDetId(detections[0].id);
-    }, [selected?.id, detections.length]);
+        // When an image opens, default focus to the detection for this species page.
+        const firstPageDetection = detections.find((d) => detectionMatchesSpeciesPage(d, decoded));
+        const nextFocus = firstPageDetection?.id ?? detections[0]?.id;
+        if (focusedDetId == null && nextFocus != null) setFocusedDetId(nextFocus);
+    }, [selected?.id, detections, decoded, focusedDetId]);
 
     useEffect(() => {
         if (!isQuoll) return;
@@ -2354,21 +2379,38 @@ function SpeciesImages() {
     }, [compareId]);
 
     useEffect(() => {
-        if (!isQuoll || focusedDetId == null) {
+        const focusedForSuggestions = detections.find((d) => d.id === focusedDetId);
+        if (
+            !isQuoll ||
+            focusedDetId == null ||
+            !focusedForSuggestions ||
+            !detectionMatchesSpeciesPage(focusedForSuggestions, decoded)
+        ) {
+            reidRequestSeq.current++;
             setReidSuggestions(null);
             setReidSuggestionsError(null);
+            setReidSuggestionsLoading(false);
             return;
         }
+        const requestId = ++reidRequestSeq.current;
         setReidSuggestionsLoading(true);
         setReidSuggestionsError(null);
         fetchReidSuggestions(focusedDetId, 5)
-            .then(setReidSuggestions)
-            .catch((e: any) => {
-                setReidSuggestions(null);
-                setReidSuggestionsError(e?.message || 'No suggestions available');
+            .then((data) => {
+                if (requestId === reidRequestSeq.current && data.detection_id === focusedDetId) {
+                    setReidSuggestions(data);
+                }
             })
-            .finally(() => setReidSuggestionsLoading(false));
-    }, [isQuoll, focusedDetId]);
+            .catch((e: any) => {
+                if (requestId === reidRequestSeq.current) {
+                    setReidSuggestions(null);
+                    setReidSuggestionsError(e?.message || 'No suggestions available');
+                }
+            })
+            .finally(() => {
+                if (requestId === reidRequestSeq.current) setReidSuggestionsLoading(false);
+            });
+    }, [isQuoll, focusedDetId, detections, decoded]);
 
     // Auto-fill the manual assign input with the current assignment when focus changes.
     useEffect(() => {
@@ -2400,6 +2442,8 @@ function SpeciesImages() {
 
     if (loading) return <LoadingState />;
     const focused = focusedDetId != null ? detections.find((d) => d.id === focusedDetId) : null;
+    const reidSuggestionsForFocused =
+        reidSuggestions && reidSuggestions.detection_id === focusedDetId ? reidSuggestions : null;
     const currentAssigned = (() => {
         if (!focused?.annotations || focused.annotations.length === 0) return null;
         const withId = focused.annotations.filter((a) => a && a.individual_id);
@@ -2597,7 +2641,8 @@ function SpeciesImages() {
                                     for (const imgId of Array.from(selectedIds)) {
                                         try {
                                             const detail: any = await fetchImageDetail(imgId);
-                                            const dets: Detection[] = detail.detections || [];
+                                            const dets: Detection[] = (detail.detections || [])
+                                                .filter((det: Detection) => detectionMatchesSpeciesPage(det, decoded));
                                             for (const det of dets) {
                                                 await createAnnotation({ detection_id: det.id, is_correct: true, individual_id: bulkAssignId.trim() });
                                                 assigned++;
@@ -2757,17 +2802,17 @@ function SpeciesImages() {
                                                 <div className="tag tag-muted">Scoring similarities…</div>
                                             ) : reidSuggestionsError ? (
                                                 <div className="tag tag-muted">{reidSuggestionsError}</div>
-                                            ) : !reidSuggestions || reidSuggestions.suggestions.length === 0 ? (
+                                            ) : !reidSuggestionsForFocused || reidSuggestionsForFocused.suggestions.length === 0 ? (
                                                 <div className="tag tag-muted">No suggested individuals for this detection yet.</div>
                                             ) : (
                                                 <div style={{ display: 'grid', gap: '0.45rem' }}>
-                                                    {reidSuggestions.suggestions.map((s) => {
+                                                    {reidSuggestionsForFocused.suggestions.map((s) => {
                                                         const isCurrent = s.individual_id === currentAssigned;
                                                         return (
                                                             <button
                                                                 key={`${focusedDetId}-${s.rank}-${s.individual_id}`}
                                                                 className={isCurrent ? 'btn btn-primary' : 'btn btn-outline'}
-                                                                disabled={!focused || savingAssign}
+                                                                disabled={!focused || savingAssign || reidSuggestionsForFocused.detection_id !== focused.id}
                                                                 onClick={() => assignFocusedIndividual(s.individual_id, `AI suggestion rank ${s.rank}`)}
                                                                 style={{
                                                                     textAlign: 'left',
