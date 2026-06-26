@@ -1,8 +1,10 @@
 """Tests for annotation CRUD (create, read, update)."""
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.annotation import Annotation
 from backend.app.models.individual import Individual
 from backend.tests.conftest import auth_header
 
@@ -109,3 +111,41 @@ async def test_annotation_flag_retraining(client: AsyncClient, test_user, sample
         "flag_for_retraining": True,
     }, headers=auth_header(test_user))
     assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_reassigning_individual_clears_stale_active_assignments(
+    client: AsyncClient,
+    test_user,
+    sample_data,
+    db: AsyncSession,
+):
+    db.add_all([
+        Individual(individual_id="02Q2", species="Dasyurus sp | Quoll sp"),
+        Individual(individual_id="03Q3", species="Dasyurus sp | Quoll sp"),
+    ])
+    await db.commit()
+
+    det_id = sample_data["detections"][0].id
+    first = await client.post(
+        "/api/annotations/",
+        json={"detection_id": det_id, "is_correct": True, "individual_id": "02Q2"},
+        headers=auth_header(test_user),
+    )
+    assert first.status_code == 201
+    second = await client.post(
+        "/api/annotations/",
+        json={"detection_id": det_id, "is_correct": True, "individual_id": "03Q3"},
+        headers=auth_header(test_user),
+    )
+    assert second.status_code == 201
+
+    rows = (
+        await db.execute(
+            select(Annotation.individual_id).where(
+                Annotation.detection_id == det_id,
+                Annotation.individual_id.isnot(None),
+            )
+        )
+    ).scalars().all()
+    assert rows == ["03Q3"]
