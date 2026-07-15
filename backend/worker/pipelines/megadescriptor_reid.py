@@ -6,8 +6,11 @@ prototypes, class_names). Lazy-loaded once per gallery path.
 """
 from __future__ import annotations
 
+import fcntl
 import logging
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 import torch
@@ -257,46 +260,88 @@ def embed_crop(crop_abs_path: Path, gallery_path: Path) -> torch.Tensor | None:
 
 
 def incremental_update_gallery(gallery_path: Path, individual_id: str, embedding: torch.Tensor) -> bool:
-    """Update or append an individual's prototype in the saved gallery."""
-    st = _ensure_state(gallery_path)
-    if st is None:
-        return False
-    names: list[str] = st["class_names"]
-    protos: torch.Tensor = st["prototypes"]
-    emb = F.normalize(embedding.float().view(1, -1), p=2, dim=1).cpu().squeeze(0)
-    counts = st.get("prototype_counts")
-    if not isinstance(counts, list) or len(counts) != len(names):
-        counts = [1 for _ in names]
+    """Atomically update or append an individual's prototype in the saved gallery."""
+    global _state
 
-    if individual_id in names:
-        idx = names.index(individual_id)
-        n = max(1, int(counts[idx]))
-        updated = F.normalize((protos[idx] * n) + emb, p=2, dim=0)
-        protos[idx] = updated
-        counts[idx] = n + 1
-    else:
-        names.append(individual_id)
-        protos = torch.cat([protos, emb.unsqueeze(0)], dim=0)
-        counts.append(1)
-
-    ckpt = {
-        "prototypes": protos.cpu(),
-        "class_names": names,
-        "prototype_counts": counts,
-        "gallery_version": int(st.get("gallery_version", 1)) + 1,
-    }
-    tmp_path = gallery_path.with_suffix(".tmp.pt")
-    torch.save(ckpt, tmp_path)
-    tmp_path.replace(gallery_path)
-
-    st["prototypes"] = protos.cpu()
-    st["class_names"] = names
-    st["prototype_counts"] = counts
-    st["gallery_version"] = ckpt["gallery_version"]
+    lock_path = gallery_path.with_name(f".{gallery_path.name}.lock")
     try:
-        stat = gallery_path.stat()
-        st["mtime_ns"] = int(stat.st_mtime_ns)
-        st["size"] = int(stat.st_size)
+        lock_file = lock_path.open("a+b")
     except OSError:
-        pass
-    return True
+        logger.exception("megadescriptor_reid: could not open gallery lock %s", lock_path)
+        return False
+
+    with lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        # Reload after taking the inter-process lock so this update includes any
+        # checkpoint written by another API or worker process while we waited.
+        st = _ensure_state(gallery_path)
+        if st is None:
+            return False
+
+        # Build a new snapshot instead of mutating the cached objects that
+        # concurrent inference requests may still be reading.
+        names: list[str] = list(st["class_names"])
+        protos: torch.Tensor = st["prototypes"].clone()
+        emb = F.normalize(embedding.float().view(1, -1), p=2, dim=1).cpu().squeeze(0)
+        stored_counts = st.get("prototype_counts")
+        if isinstance(stored_counts, list) and len(stored_counts) == len(names):
+            counts = list(stored_counts)
+        else:
+            counts = [1 for _ in names]
+
+        if individual_id in names:
+            idx = names.index(individual_id)
+            n = max(1, int(counts[idx]))
+            protos[idx] = F.normalize((protos[idx] * n) + emb, p=2, dim=0)
+            counts[idx] = n + 1
+        else:
+            names.append(individual_id)
+            protos = torch.cat([protos, emb.unsqueeze(0)], dim=0)
+            counts.append(1)
+
+        ckpt = {
+            "prototypes": protos.cpu(),
+            "class_names": names,
+            "prototype_counts": counts,
+            "gallery_version": int(st.get("gallery_version", 1)) + 1,
+        }
+
+        tmp_path: Path | None = None
+        try:
+            fd, tmp_name = tempfile.mkstemp(
+                dir=gallery_path.parent,
+                prefix=f".{gallery_path.name}.",
+                suffix=".tmp",
+            )
+            tmp_path = Path(tmp_name)
+            with os.fdopen(fd, "wb") as tmp_file:
+                torch.save(ckpt, tmp_file)
+                tmp_file.flush()
+                os.fsync(tmp_file.fileno())
+            tmp_path.replace(gallery_path)
+        except OSError:
+            logger.exception("megadescriptor_reid: failed writing gallery %s", gallery_path)
+            return False
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+
+        try:
+            stat = gallery_path.stat()
+            mtime_ns = int(stat.st_mtime_ns)
+            size = int(stat.st_size)
+        except OSError:
+            mtime_ns = st.get("mtime_ns")
+            size = st.get("size")
+
+        _state = {
+            **st,
+            "prototypes": protos.cpu(),
+            "class_names": names,
+            "prototype_counts": counts,
+            "gallery_version": ckpt["gallery_version"],
+            "mtime_ns": mtime_ns,
+            "size": size,
+        }
+        return True
