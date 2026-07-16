@@ -10,6 +10,7 @@ from backend.app.models.individual import Individual
 from backend.app.models.sighting import Sighting
 from backend.app.schemas.schemas import IndividualOut, IndividualCreate, IndividualProfileUpdate
 from backend.app.models.user import User
+from backend.app.services.reid_learning import remove_individual_from_reid_gallery
 from backend.app.utils.dependencies import get_current_user, require_role
 
 router = APIRouter(prefix="/individuals", tags=["Individuals"])
@@ -128,6 +129,12 @@ async def delete_individual(
     ).scalar_one_or_none()
     if not ind:
         raise HTTPException(status_code=404, detail="Individual not found")
+
+    if not await remove_individual_from_reid_gallery(individual_id):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not remove individual from the re-ID gallery; profile was not deleted",
+        )
 
     await db.execute(
         sa_update(Annotation)

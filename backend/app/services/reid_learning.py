@@ -1,6 +1,7 @@
 """Re-ID learning helpers: suggestion telemetry, incremental updates, and rebuilds."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -97,6 +98,18 @@ async def incremental_update_from_detection(db: AsyncSession, detection_id: int,
     if embedding is None:
         return False
     return incremental_update_gallery(gallery, individual_id, embedding)
+
+
+async def remove_individual_from_reid_gallery(individual_id: str) -> bool:
+    """Remove a deleted individual from the automatic re-ID checkpoint."""
+    gallery = reid_gallery_path()
+    if not gallery.is_file():
+        return True
+    try:
+        from backend.worker.pipelines.megadescriptor_reid import remove_individual_from_gallery
+    except ImportError:
+        return False
+    return await asyncio.to_thread(remove_individual_from_gallery, gallery, individual_id)
 
 
 async def rebuild_gallery_from_confirmed_annotations(db: AsyncSession) -> dict[str, int]:

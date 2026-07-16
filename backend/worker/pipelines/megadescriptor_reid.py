@@ -6,8 +6,11 @@ prototypes, class_names). Lazy-loaded once per gallery path.
 """
 from __future__ import annotations
 
+import fcntl
 import logging
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 import torch
@@ -300,3 +303,80 @@ def incremental_update_gallery(gallery_path: Path, individual_id: str, embedding
     except OSError:
         pass
     return True
+
+
+def remove_individual_from_gallery(gallery_path: Path, individual_id: str) -> bool:
+    """Remove an individual prototype from a saved gallery checkpoint."""
+    global _state
+
+    if not gallery_path.is_file():
+        return True
+
+    lock_path = gallery_path.with_name(f".{gallery_path.name}.lock")
+    try:
+        lock_file = lock_path.open("a+b")
+    except OSError:
+        logger.exception("megadescriptor_reid: could not open gallery lock %s", lock_path)
+        return False
+
+    with lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if not gallery_path.is_file():
+            return True
+
+        try:
+            try:
+                ckpt = torch.load(gallery_path, map_location="cpu", weights_only=False)
+            except TypeError:
+                ckpt = torch.load(gallery_path, map_location="cpu")
+
+            names = [str(value) for value in ckpt["class_names"]]
+            prototypes = ckpt["prototypes"].float().cpu()
+            if prototypes.ndim != 2 or prototypes.shape[0] != len(names):
+                raise ValueError("gallery prototypes and class names are inconsistent")
+
+            keep_indexes = [index for index, name in enumerate(names) if name != individual_id]
+            if len(keep_indexes) == len(names):
+                return True
+
+            stored_counts = ckpt.get("prototype_counts")
+            if isinstance(stored_counts, list) and len(stored_counts) == len(names):
+                counts = [stored_counts[index] for index in keep_indexes]
+            else:
+                counts = [1 for _ in keep_indexes]
+
+            ckpt = {
+                **ckpt,
+                "prototypes": prototypes[keep_indexes].clone(),
+                "class_names": [names[index] for index in keep_indexes],
+                "prototype_counts": counts,
+                "gallery_version": int(ckpt.get("gallery_version", 1)) + 1,
+            }
+
+            tmp_path: Path | None = None
+            try:
+                fd, tmp_name = tempfile.mkstemp(
+                    dir=gallery_path.parent,
+                    prefix=f".{gallery_path.name}.",
+                    suffix=".tmp",
+                )
+                tmp_path = Path(tmp_name)
+                with os.fdopen(fd, "wb") as tmp_file:
+                    torch.save(ckpt, tmp_file)
+                    tmp_file.flush()
+                    os.fsync(tmp_file.fileno())
+                tmp_path.replace(gallery_path)
+            finally:
+                if tmp_path is not None:
+                    tmp_path.unlink(missing_ok=True)
+        except Exception:
+            logger.exception(
+                "megadescriptor_reid: failed removing individual %s from %s",
+                individual_id,
+                gallery_path,
+            )
+            return False
+
+        # Force this process to reload the replacement snapshot on its next use.
+        _state = None
+        return True
