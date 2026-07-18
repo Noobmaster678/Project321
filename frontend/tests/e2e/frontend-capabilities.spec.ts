@@ -115,7 +115,7 @@ test('reference comparison ignores a stale gallery response', async ({ page }) =
 
   await page.goto('/individuals/species/quoll/images');
   await page.getByText('quoll.jpg').click();
-  const comparison = page.getByText('Reference comparison').locator('..');
+  const comparison = page.getByText('Reference comparison').locator('../..');
   const picker = comparison.getByRole('combobox');
   await picker.selectOption('A');
   await picker.selectOption('B');
