@@ -2345,12 +2345,25 @@ function SpeciesImages() {
     }, [selected?.id, isQuoll, decoded, selectMode]);
 
     useEffect(() => {
-        if (!compareId) { setCompareGallery([]); return; }
+        let cancelled = false;
+        setSplitOpen(false);
+        setCompareGallery([]);
+        if (!compareId) {
+            setCompareLoading(false);
+            return () => { cancelled = true; };
+        }
         setCompareLoading(true);
         fetchIndividualGallery(compareId)
-            .then((g) => setCompareGallery(g.items || []))
-            .catch(() => setCompareGallery([]))
-            .finally(() => setCompareLoading(false));
+            .then((g) => {
+                if (!cancelled) setCompareGallery(g.items || []);
+            })
+            .catch(() => {
+                if (!cancelled) setCompareGallery([]);
+            })
+            .finally(() => {
+                if (!cancelled) setCompareLoading(false);
+            });
+        return () => { cancelled = true; };
     }, [compareId]);
 
     useEffect(() => {
