@@ -109,11 +109,14 @@ async def test_upload_single(client: AsyncClient, test_user):
     fake_jpg = io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
     resp = await client.post(
         "/api/images/upload",
-        files={"file": ("test_img.jpg", fake_jpg, "image/jpeg")},
+        files={"file": ("unique_single_upload.jpg", fake_jpg, "image/jpeg")},
         headers=auth_header(test_user),
     )
     assert resp.status_code == 200
-    assert resp.json()["filename"] == "test_img.jpg"
+    assert resp.json()["filename"] == "unique_single_upload.jpg"
+    saved = UPLOAD_DIR / "unique_single_upload.jpg"
+    if saved.exists():
+        saved.unlink()
 
 
 @pytest.mark.asyncio
@@ -181,18 +184,27 @@ async def test_upload_skips_filesystem_collision_without_overwriting(client: Asy
     orphan = UPLOAD_DIR / "orphan.jpg"
     orphan.parent.mkdir(parents=True, exist_ok=True)
     orphan.write_bytes(b"ORIGINAL-BYTES-DO-NOT-CLOBBER")
-
-    fake_jpg = io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
-    resp = await client.post(
-        "/api/images/upload",
-        files={"file": ("orphan.jpg", fake_jpg, "image/jpeg")},
-        headers=auth_header(test_user),
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["file_path"] != "uploads/orphan.jpg"
-    assert data["filename"].startswith("orphan_")
-    assert orphan.read_bytes() == b"ORIGINAL-BYTES-DO-NOT-CLOBBER"
-    saved = Path(UPLOAD_DIR.parent) / data["file_path"]
-    assert saved.exists()
+    saved = None
+    try:
+        fake_jpg = io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+        resp = await client.post(
+            "/api/images/upload",
+            files={"file": ("orphan.jpg", fake_jpg, "image/jpeg")},
+            headers=auth_header(test_user),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["file_path"] != "uploads/orphan.jpg"
+        assert data["filename"].startswith("orphan_")
+        assert orphan.read_bytes() == b"ORIGINAL-BYTES-DO-NOT-CLOBBER"
+        saved = Path(UPLOAD_DIR.parent) / data["file_path"]
+        assert saved.exists()
+    finally:
+        if orphan.exists():
+            orphan.unlink()
+        if saved is not None and saved.exists():
+            saved.unlink()
+        # Clean any other orphan_N leftovers from prior runs.
+        for leftover in UPLOAD_DIR.glob("orphan_*.jpg"):
+            leftover.unlink()
 
