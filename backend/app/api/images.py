@@ -1,5 +1,6 @@
 """Image browsing, upload, and batch processing API endpoints."""
 import asyncio
+import os
 import shutil
 from pathlib import Path
 
@@ -30,6 +31,7 @@ router = APIRouter(prefix="/images", tags=["Images"])
 
 UPLOAD_DIR = settings.STORAGE_ROOT / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 _local_batch_queues: dict[int, list[int]] = {}
 _local_batch_tasks: dict[int, asyncio.Task] = {}
 
@@ -43,12 +45,22 @@ def _sanitize_upload_path(raw_name: str | None) -> Path:
     return Path(*parts)
 
 
+def _is_allowed_upload_extension(path: Path | str | None) -> bool:
+    """Return True when the path uses an allowed image extension."""
+    return Path(path or "").suffix.lower() in ALLOWED_UPLOAD_EXTENSIONS
+
+
 async def _reserve_unique_upload_path(
     db: AsyncSession,
     raw_name: str | None,
     reserved_rel_paths: set[str],
 ) -> tuple[Path, str, str]:
-    """Return a unique destination path and DB file_path for an upload."""
+    """Return a unique destination path and DB file_path for an upload.
+
+    Uniqueness is enforced against in-request reservations, existing DB rows,
+    and the filesystem via O_EXCL so concurrent uploads cannot overwrite bytes
+    that another request already associated with a surviving image row.
+    """
     cleaned = _sanitize_upload_path(raw_name)
     parent = cleaned.parent
     stem = cleaned.stem or "image"
@@ -65,11 +77,21 @@ async def _reserve_unique_upload_path(
 
         exists_query = select(Image.id).where(Image.file_path == rel_path).limit(1)
         exists = (await db.execute(exists_query)).scalar_one_or_none()
-        if exists is None:
-            reserved_rel_paths.add(rel_path)
-            return UPLOAD_DIR / parent / name, rel_path, name
+        if exists is not None:
+            i += 1
+            continue
 
-        i += 1
+        dest = UPLOAD_DIR / parent / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            i += 1
+            continue
+        os.close(fd)
+
+        reserved_rel_paths.add(rel_path)
+        return dest, rel_path, name
 
 
 async def _run_batch_locally(job_id: int, image_ids: list[int]) -> None:
@@ -273,12 +295,10 @@ async def upload_image(
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a single image, save to storage, create DB record, queue ML processing."""
-    ext = Path(file.filename or "unknown.jpg").suffix.lower()
-    if ext not in (".jpg", ".jpeg", ".png"):
+    if not _is_allowed_upload_extension(file.filename):
         raise HTTPException(status_code=400, detail="Unsupported image format")
 
     dest, rel_path, saved_name = await _reserve_unique_upload_path(db, file.filename, set())
-    dest.parent.mkdir(parents=True, exist_ok=True)
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
@@ -457,15 +477,19 @@ async def upload_batch(
     reserved_rel_paths: set[str] = set()
 
     for idx, f in enumerate(files):
-        ext = Path(f.filename or "unknown.jpg").suffix.lower()
-        if ext not in (".jpg", ".jpeg", ".png"):
-            continue
-
+        # Validate the path that will actually be saved. UploadFile.filename can
+        # claim ".jpg" while relative_paths asks to store ".html"/".js", which
+        # would be served same-origin under /storage and enable stored XSS.
         rel_path_from_browser = paths_list[idx] if idx < len(paths_list) else None
         use_path = rel_path_from_browser or f.filename
+        if not _is_allowed_upload_extension(_sanitize_upload_path(use_path)):
+            continue
+        if not _is_allowed_upload_extension(f.filename):
+            continue
 
         file_camera_id = camera_id
         file_collection_id = collection_id
+        cam_name = None
 
         if rel_path_from_browser:
             col_name = collection_name or _extract_collection_name(rel_path_from_browser)
@@ -487,7 +511,6 @@ async def upload_batch(
             await _ensure_deployment(db, file_camera_id, file_collection_id, deployment_cache, coords)
 
         dest, rel_path, saved_name = await _reserve_unique_upload_path(db, use_path, reserved_rel_paths)
-        dest.parent.mkdir(parents=True, exist_ok=True)
         with open(dest, "wb") as out:
             shutil.copyfileobj(f.file, out)
 

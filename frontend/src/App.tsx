@@ -312,6 +312,8 @@ function PendingReviewPage() {
     const [cameraFilter, setCameraFilter] = useState<number | undefined>(undefined);
     const [dateFrom, setDateFrom] = useState('');
     const [dateTo, setDateTo] = useState('');
+    // Fence async category loads so a slow prior response cannot overwrite a newer category's detections.
+    const categoryRequestId = useRef(0);
 
     useEffect(() => {
         Promise.all([fetchReviewQueue(), fetchCameraStats()])
@@ -321,25 +323,30 @@ function PendingReviewPage() {
     }, [reviewed]);
 
     const loadCategory = async (cat: string, page = 1) => {
+        const requestId = ++categoryRequestId.current;
         setFilterLoading(true);
         setFilterPage(page);
         setReviewIdx(0);
         try {
             if (cat === 'verify-quolls') {
                 const res = await fetchDetections({ species: 'quoll', review_status: 'unreviewed', per_page: 50, page, camera_id: cameraFilter, date_from: dateFrom || undefined, date_to: dateTo || undefined });
+                if (categoryRequestId.current !== requestId) return;
                 setFilterDetections(res.items);
             } else if (cat === 'low-confidence') {
                 const res = await fetchDetections({ max_confidence: 0.5, review_status: 'unreviewed', per_page: 50, page, category: 'animal', camera_id: cameraFilter, date_from: dateFrom || undefined, date_to: dateTo || undefined });
+                if (categoryRequestId.current !== requestId) return;
                 setFilterDetections(res.items);
             } else if (cat === 'empty-check') {
                 const res = await fetchImages({ has_animal: false, per_page: 50, page, camera_id: cameraFilter });
+                if (categoryRequestId.current !== requestId) return;
                 setFilterImages(res);
             } else if (cat === 'assign-individual') {
                 const res = await fetchDetections({ species: 'quoll', review_status: 'verified', per_page: 50, page, camera_id: cameraFilter });
+                if (categoryRequestId.current !== requestId) return;
                 setFilterDetections(res.items.filter((d: any) => !(d.annotations ?? []).some((a: any) => a.individual_id)));
             }
         } catch { }
-        setFilterLoading(false);
+        if (categoryRequestId.current === requestId) setFilterLoading(false);
     };
 
     const openCategory = (cat: string) => {
