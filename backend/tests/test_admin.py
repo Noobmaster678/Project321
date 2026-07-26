@@ -1,9 +1,14 @@
 """Tests for admin-only endpoints: user management, system metrics."""
+import io
+import zipfile
 from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.config import settings
+from backend.app.models.missed_correction import MissedDetectionCorrection
 from backend.tests.conftest import auth_header
 
 
@@ -81,3 +86,42 @@ async def test_reid_backfill_no_gallery(client: AsyncClient, admin_user, monkeyp
     )
     assert resp.status_code == 400
     assert "gallery" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_retraining_export_sanitizes_zip_slip_species(
+    client: AsyncClient, admin_user, test_user, sample_data, db: AsyncSession,
+):
+    """Reviewer-controlled species labels must not become Zip Slip paths."""
+    img = sample_data["images"][0]
+    src = settings.STORAGE_ROOT / img.file_path
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 32)
+
+    db.add(
+        MissedDetectionCorrection(
+            image_id=img.id,
+            bbox_x=0.1,
+            bbox_y=0.1,
+            bbox_w=0.2,
+            bbox_h=0.2,
+            species=r"..\..\Startup\evil",
+            annotator=test_user.email,
+            flag_for_retraining=True,
+        )
+    )
+    await db.commit()
+
+    resp = await client.get(
+        "/api/admin/export-retraining-dataset",
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200, resp.text
+
+    with zipfile.ZipFile(io.BytesIO(resp.content), "r") as zf:
+        names = zf.namelist()
+    assert names
+    for name in names:
+        assert "\\" not in name
+        assert ".." not in Path(name).parts
+        assert not Path(name).is_absolute()

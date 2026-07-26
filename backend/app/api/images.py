@@ -398,9 +398,13 @@ async def _ensure_deployment(
     )
     row = (await db.execute(q)).scalar_one_or_none()
     if row:
+        # Never overwrite established deployment GPS — batch upload is not a
+        # location-edit API, and any reviewer can supply camera_coordinates.
         if coords:
-            row.latitude = coords["latitude"]
-            row.longitude = coords["longitude"]
+            if row.latitude is None:
+                row.latitude = coords["latitude"]
+            if row.longitude is None:
+                row.longitude = coords["longitude"]
         cache[key] = row.id
         return row.id
     dep = Deployment(
@@ -479,8 +483,12 @@ async def upload_batch(
                 if coords:
                     cam_row = (await db.execute(select(Camera).where(Camera.id == file_camera_id))).scalar_one_or_none()
                     if cam_row:
-                        cam_row.latitude = coords["latitude"]
-                        cam_row.longitude = coords["longitude"]
+                        # Cameras are global by name. Only fill missing GPS so a
+                        # later batch cannot poison maps/reports for shared stations.
+                        if cam_row.latitude is None:
+                            cam_row.latitude = coords["latitude"]
+                        if cam_row.longitude is None:
+                            cam_row.longitude = coords["longitude"]
 
         if file_camera_id is not None:
             coords = camera_coords_map.get(cam_name) if rel_path_from_browser else None

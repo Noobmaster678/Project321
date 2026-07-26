@@ -27,6 +27,15 @@ from backend.app.utils.dependencies import require_role
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
+def _safe_zip_label(label: str | None) -> str:
+    """Sanitize a species/label used as a ZIP folder component (Zip Slip hardening)."""
+    raw = (label or "unknown").replace("\\", "_").replace("/", "_").replace("\0", "")
+    raw = raw.strip().strip(".")
+    while ".." in raw:
+        raw = raw.replace("..", ".")
+    return raw or "unknown"
+
+
 def _database_file_path() -> Path | None:
     url = settings.DATABASE_URL
     if url.startswith("sqlite+aiosqlite:///./"):
@@ -156,7 +165,7 @@ async def export_retraining_dataset(
         seen: set[str] = set()
 
         for det, ann in correct_rows:
-            label = (det.species or "unknown").replace("/", "_").strip()
+            label = _safe_zip_label(det.species)
             crop_full = settings.STORAGE_ROOT / det.crop_path
             if crop_full.exists():
                 arcname = f"confirmed/{label}/{Path(det.crop_path).name}"
@@ -165,7 +174,7 @@ async def export_retraining_dataset(
                     zf.write(crop_full, arcname)
 
         for det, ann in corrected_rows:
-            label = (ann.corrected_species or "unknown").replace("/", "_").strip()
+            label = _safe_zip_label(ann.corrected_species)
             crop_full = settings.STORAGE_ROOT / det.crop_path
             if crop_full.exists():
                 arcname = f"corrected/{label}/{Path(det.crop_path).name}"
@@ -174,7 +183,7 @@ async def export_retraining_dataset(
                     zf.write(crop_full, arcname)
 
         for mc in missed_rows:
-            label = (mc.species or "unknown").replace("/", "_").strip()
+            label = _safe_zip_label(mc.species)
             if mc.image and mc.image.file_path:
                 img_full = settings.STORAGE_ROOT / mc.image.file_path
                 if not img_full.exists():
