@@ -1,7 +1,9 @@
 """Tests for image listing, detail, and upload endpoints."""
 import io
+import json
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.individual import Individual
@@ -142,3 +144,80 @@ async def test_upload_bad_format(client: AsyncClient, test_user):
         headers=auth_header(test_user),
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_batch_upload_does_not_overwrite_existing_camera_coordinates(
+    client: AsyncClient, test_user, sample_data, db: AsyncSession,
+):
+    """Reviewers must not be able to poison shared camera GPS via batch upload."""
+    from backend.app.models.camera import Camera
+    from backend.app.models.deployment import Deployment
+
+    cam = sample_data["camera"]
+    coll = sample_data["collection"]
+    assert cam.latitude == -35.0
+    assert cam.longitude == 150.0
+
+    dep = Deployment(
+        camera_id=cam.id,
+        collection_id=coll.id,
+        latitude=-35.0,
+        longitude=150.0,
+    )
+    db.add(dep)
+    await db.commit()
+
+    fake_jpg = io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+    rel = f"{coll.name}/{cam.name}/poison.jpg"
+    resp = await client.post(
+        "/api/images/upload-batch",
+        data={
+            "relative_paths": json.dumps([rel]),
+            "camera_coordinates": json.dumps({
+                cam.name: {"latitude": 0.0, "longitude": 0.0},
+            }),
+        },
+        files=[("files", ("poison.jpg", fake_jpg, "image/jpeg"))],
+        headers=auth_header(test_user),
+    )
+    assert resp.status_code == 200, resp.text
+
+    await db.refresh(cam)
+    assert cam.latitude == -35.0
+    assert cam.longitude == 150.0
+
+    await db.refresh(dep)
+    assert dep.latitude == -35.0
+    assert dep.longitude == 150.0
+
+
+@pytest.mark.asyncio
+async def test_batch_upload_fills_missing_camera_coordinates(
+    client: AsyncClient, test_user, db: AsyncSession,
+):
+    """New/incomplete cameras may still receive GPS on first batch upload."""
+    from backend.app.models.camera import Camera
+
+    cam = Camera(name="9Z", camera_number=9, side="Z", latitude=None, longitude=None)
+    db.add(cam)
+    await db.commit()
+
+    fake_jpg = io.BytesIO(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+    rel = "NewCollection/9Z/first.jpg"
+    resp = await client.post(
+        "/api/images/upload-batch",
+        data={
+            "relative_paths": json.dumps([rel]),
+            "camera_coordinates": json.dumps({
+                "9Z": {"latitude": -34.5, "longitude": 149.25},
+            }),
+        },
+        files=[("files", ("first.jpg", fake_jpg, "image/jpeg"))],
+        headers=auth_header(test_user),
+    )
+    assert resp.status_code == 200, resp.text
+
+    await db.refresh(cam)
+    assert cam.latitude == -34.5
+    assert cam.longitude == 149.25

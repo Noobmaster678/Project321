@@ -23,6 +23,15 @@ from backend.app.utils.dependencies import get_current_user
 router = APIRouter(prefix="/exports", tags=["Exports"])
 
 
+def _safe_zip_label(label: str | None) -> str:
+    """Sanitize a species/label used as a ZIP folder component (Zip Slip hardening)."""
+    raw = (label or "unknown").replace("\\", "_").replace("/", "_").replace("\0", "")
+    raw = raw.strip().strip(".")
+    while ".." in raw:
+        raw = raw.replace("..", ".")
+    return raw or "unknown"
+
+
 @router.get("/quoll-detections")
 async def export_quoll_detections(
     min_confidence: float = 0.0,
@@ -193,7 +202,7 @@ async def export_crops_zip(
         for d in dets:
             crop_full = settings.STORAGE_ROOT / d.crop_path
             if crop_full.exists():
-                arcname = f"{d.species or 'unknown'}/{Path(d.crop_path).name}"
+                arcname = f"{_safe_zip_label(d.species)}/{Path(d.crop_path).name}"
                 zf.write(crop_full, arcname)
 
     buf.seek(0)
