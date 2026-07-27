@@ -52,11 +52,12 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
     total_cameras = (await db.execute(select(func.count(Camera.id)))).scalar() or 0
     total_collections = (await db.execute(select(func.count(Collection.id)))).scalar() or 0
 
-    # Detections that have no annotation yet
-    annotated_ids = select(Annotation.detection_id).distinct()
+    # Detections that have no human review decision yet (is_correct set).
+    # Auto re-ID annotations only set individual_id and must not clear pending.
+    reviewed_ids = select(Annotation.detection_id).where(Annotation.is_correct.isnot(None)).distinct()
     pending_review = (await db.execute(
         select(func.count(Detection.id)).where(
-            and_(Detection.category == "animal", Detection.id.notin_(annotated_ids))
+            and_(Detection.category == "animal", Detection.id.notin_(reviewed_ids))
         )
     )).scalar() or 0
 

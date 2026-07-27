@@ -166,6 +166,38 @@ async def _run_process_image(image_id: int):
             await db.commit()
 
 
+def resolve_batch_job_completion(
+    *,
+    total_images: int,
+    processed_images: int,
+    failed_images: int,
+    chunk_failed_ids: list[int] | None = None,
+) -> tuple[bool, str | None, str | None]:
+    """Decide whether a batch job can be marked terminal after a chunk finishes.
+
+    Multi-chunk uploads dispatch one Celery/local task per chunk against the same
+    job row. Completing when *this* chunk ends (but total_images still exceeds
+    processed+failed) falsely marks the job done and stops the UI poller while
+    later chunks are still queued.
+
+    Returns (is_terminal, status, error_message). When not terminal, status and
+    error_message are None and the caller should leave the job in progress.
+    """
+    total = max(int(total_images or 0), 0)
+    done = max(int(processed_images or 0), 0) + max(int(failed_images or 0), 0)
+    if total <= 0 or done < total:
+        return False, None, None
+
+    if failed_images > 0:
+        error_message = None
+        if chunk_failed_ids:
+            ids_preview = ",".join(str(i) for i in chunk_failed_ids[:50])
+            suffix = "..." if len(chunk_failed_ids) > 50 else ""
+            error_message = f"Failed image IDs: {ids_preview}{suffix}"
+        return True, "completed_with_errors", error_message
+    return True, "completed", None
+
+
 async def _run_process_batch(job_id: int, image_ids: list[int]):
     md, awc = _ensure_pipelines()
 
@@ -173,7 +205,9 @@ async def _run_process_batch(job_id: int, image_ids: list[int]):
         job = (await db.execute(select(ProcessingJob).where(ProcessingJob.id == job_id))).scalar_one_or_none()
         if job:
             job.status = "processing"
-            job.started_at = datetime.now(timezone.utc)
+            job.completed_at = None
+            if job.started_at is None:
+                job.started_at = datetime.now(timezone.utc)
             await db.commit()
 
     failed_image_ids: list[int] = []
@@ -203,16 +237,23 @@ async def _run_process_batch(job_id: int, image_ids: list[int]):
     async with async_session_factory() as db:
         job = (await db.execute(select(ProcessingJob).where(ProcessingJob.id == job_id))).scalar_one_or_none()
         if job:
-            if job.failed_images > 0:
-                job.status = "completed_with_errors"
-                if failed_image_ids:
-                    ids_preview = ",".join(str(i) for i in failed_image_ids[:50])
-                    suffix = "..." if len(failed_image_ids) > 50 else ""
-                    job.error_message = f"Failed image IDs: {ids_preview}{suffix}"
+            is_terminal, status, error_message = resolve_batch_job_completion(
+                total_images=job.total_images or 0,
+                processed_images=job.processed_images or 0,
+                failed_images=job.failed_images or 0,
+                chunk_failed_ids=failed_image_ids,
+            )
+            if is_terminal:
+                job.status = status
+                if error_message is not None:
+                    job.error_message = error_message
+                elif status == "completed":
+                    job.error_message = None
+                job.completed_at = datetime.now(timezone.utc)
             else:
-                job.status = "completed"
-                job.error_message = None
-            job.completed_at = datetime.now(timezone.utc)
+                # Later upload chunks still outstanding — keep the job open.
+                job.status = "processing"
+                job.completed_at = None
             await db.commit()
 
     # Post-processing: assign event IDs based on camera+time grouping

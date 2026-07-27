@@ -508,10 +508,12 @@ async def upload_batch(
         if job.created_by is not None and job.created_by != user.id:
             raise HTTPException(status_code=403, detail="Not allowed to append to this job")
         job.total_images += len(image_ids)
-        if job.status in ("completed", "failed"):
+        # Re-open terminal jobs when more chunks arrive. Keep processed/failed
+        # counters so completion still requires covering the full total.
+        if job.status in ("completed", "failed", "completed_with_errors"):
             job.status = "queued"
             job.error_message = None
-            job.failed_images = 0
+            job.completed_at = None
     else:
         batch_label = collection_name or (list(collection_cache.keys())[0] if collection_cache else f"batch-{len(image_ids)}-files")
         job = ProcessingJob(
