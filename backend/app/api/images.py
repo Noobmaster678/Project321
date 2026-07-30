@@ -291,6 +291,10 @@ async def upload_image(
     db.add(image)
     await db.flush()
     await db.refresh(image)
+    response = ImageOut.model_validate(image)
+    # Commit before dispatch so Celery/local workers can see the row. Dispatching
+    # against an uncommitted session lets workers miss the image and skip ML forever.
+    await db.commit()
 
     try:
         from backend.worker.tasks import process_image_task
@@ -298,7 +302,7 @@ async def upload_image(
     except Exception:
         asyncio.create_task(_run_single_locally(image.id))
 
-    return ImageOut.model_validate(image)
+    return response
 
 
 def _extract_camera_name(relative_path: str) -> str | None:
@@ -523,12 +527,19 @@ async def upload_batch(
         db.add(job)
         await db.flush()
 
+    job_id_value = job.id
+    response = BatchUploadResponse(job_id=job_id_value, files_received=len(image_ids), status="queued")
+    # Commit image/job rows before enqueueing workers (same race as single upload).
+    await db.commit()
+
     try:
         from backend.worker.tasks import process_batch_task
-        task = process_batch_task.delay(job.id, image_ids)
+        task = process_batch_task.delay(job_id_value, image_ids)
         job.celery_task_id = task.id
+        await db.commit()
     except Exception:
         job.celery_task_id = "local-fallback"
-        _enqueue_local_batch(job.id, image_ids)
+        await db.commit()
+        _enqueue_local_batch(job_id_value, image_ids)
 
-    return BatchUploadResponse(job_id=job.id, files_received=len(image_ids), status="queued")
+    return response

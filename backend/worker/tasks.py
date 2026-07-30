@@ -96,15 +96,24 @@ async def _maybe_auto_reid_quoll(db: AsyncSession, detection: Detection) -> None
     )
 
 
-async def _process_single_image(db: AsyncSession, image: Image, md, awc):
-    """Process one image: extract EXIF -> MegaDetector -> crop -> AWC135 -> save detections."""
+async def _process_single_image(db: AsyncSession, image: Image, md, awc) -> bool:
+    """Process one image: extract EXIF -> MegaDetector -> crop -> AWC135 -> save detections.
+
+    Returns True when processing finished (animal or empty). Returns False when the
+    image file is missing so the row stays unprocessed and can be retried later.
+    """
     img_path = settings.DATASET_ROOT / image.file_path
     if not img_path.exists():
         img_path = settings.STORAGE_ROOT / image.file_path
     if not img_path.exists():
-        image.processed = True
-        image.has_animal = False
-        return
+        # Do NOT mark processed: workers can race uploads (commit/dispatch timing,
+        # shared storage lag). Permanently skipping would silently drop detections.
+        logger.warning(
+            "Image file missing for id=%s path=%s; leaving unprocessed for retry",
+            image.id,
+            image.file_path,
+        )
+        return False
 
     from backend.app.utils.exif import extract_image_metadata
     meta = extract_image_metadata(img_path)
@@ -125,7 +134,7 @@ async def _process_single_image(db: AsyncSession, image: Image, md, awc):
     if not animal_dets:
         image.processed = True
         image.has_animal = False
-        return
+        return True
 
     image.has_animal = True
     for i, det in enumerate(animal_dets):
@@ -155,6 +164,7 @@ async def _process_single_image(db: AsyncSession, image: Image, md, awc):
         await _maybe_auto_reid_quoll(db, detection)
 
     image.processed = True
+    return True
 
 
 async def _run_process_image(image_id: int):
@@ -182,13 +192,26 @@ async def _run_process_batch(job_id: int, image_ids: list[int]):
         try:
             async with async_session_factory() as db:
                 image = (await db.execute(select(Image).where(Image.id == img_id))).scalar_one_or_none()
+                completed = False
                 if image and not image.processed:
-                    await _process_single_image(db, image, md, awc)
+                    completed = await _process_single_image(db, image, md, awc)
                     await db.commit()
+                elif image and image.processed:
+                    completed = True
 
                 job = (await db.execute(select(ProcessingJob).where(ProcessingJob.id == job_id))).scalar_one_or_none()
                 if job:
-                    job.processed_images += 1
+                    if completed:
+                        job.processed_images += 1
+                    else:
+                        # Missing DB row or missing file: count as failed so the job
+                        # does not report success while images stay forever unprocessed.
+                        job.failed_images += 1
+                        failed_image_ids.append(img_id)
+                        if image is None:
+                            job.error_message = f"Image id {img_id} not found during processing"
+                        else:
+                            job.error_message = f"Image file missing for id {img_id}"
                     await db.commit()
         except Exception as exc:
             failed_image_ids.append(img_id)
