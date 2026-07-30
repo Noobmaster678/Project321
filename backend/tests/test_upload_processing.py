@@ -40,6 +40,9 @@ async def test_upload_commits_before_celery_dispatch(client: AsyncClient, test_u
     """Celery enqueue must run only after the image row is committed and visible."""
     visibility = {"delay_called": False, "visible_at_delay": False}
 
+    import asyncio
+    import backend.worker.tasks as tasks_mod
+
     class FakeTask:
         @staticmethod
         def delay(image_id: int):
@@ -53,42 +56,10 @@ async def test_upload_commits_before_celery_dispatch(client: AsyncClient, test_u
                     ).scalar_one_or_none()
                     visibility["visible_at_delay"] = row is not None
 
-            # delay() is sync but runs inside the request's event loop — probe now.
-            import asyncio
+            # Probe at enqueue time (must be after commit) and keep the task for await.
+            visibility["probe_task"] = asyncio.get_running_loop().create_task(_probe())
 
-            asyncio.get_running_loop().create_task(_probe())
-
-            # Also probe via a nested runner-free approach: open session and
-            # schedule the coroutine to complete before the handler returns by
-            # using an Event the handler can... actually we need immediate check.
-            # Use a dedicated Future awaited by monkeypatched wrapper below.
-
-    import backend.worker.tasks as tasks_mod
-
-    probe_done = None
-
-    class FakeTaskAwaitProbe:
-        @staticmethod
-        def delay(image_id: int):
-            visibility["delay_called"] = True
-            visibility["image_id"] = image_id
-            import asyncio
-
-            async def _probe():
-                async with TestSession() as session:
-                    row = (
-                        await session.execute(select(Image).where(Image.id == image_id))
-                    ).scalar_one_or_none()
-                    visibility["visible_at_delay"] = row is not None
-
-            # Run probe to completion before returning from delay so we assert
-            # visibility at the exact enqueue moment (post-commit).
-            nonlocal_loop = asyncio.get_running_loop()
-            fut = nonlocal_loop.create_task(_probe())
-            # Store future so the test can ensure it completed; drain below after POST
-            visibility["probe_task"] = fut
-
-    monkeypatch.setattr(tasks_mod, "process_image_task", FakeTaskAwaitProbe)
+    monkeypatch.setattr(tasks_mod, "process_image_task", FakeTask)
 
     # Prevent local fallback from racing if import path differs
     async def _no_local(_image_id: int):
