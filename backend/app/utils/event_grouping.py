@@ -36,27 +36,32 @@ async def assign_event_ids(db: AsyncSession, collection_id: int | None = None) -
 
     prev_camera = None
     prev_time = None
+    started = False
 
     for img in images:
         if img.event_id is not None:
             prev_camera = img.camera_id
             prev_time = img.captured_at
+            started = True
             continue
 
-        if (
-            prev_camera is not None
-            and img.camera_id == prev_camera
-            and prev_time is not None
-            and img.captured_at is not None
-        ):
+        if not started:
+            # First unassigned image seeds the current event without bumping.
+            pass
+        elif img.camera_id == prev_camera and prev_time is not None and img.captured_at is not None:
+            # Same station — including camera_id=NULL uploads without a folder
+            # camera. NULL==NULL must still honor EVENT_GAP_SECONDS, otherwise
+            # days-apart images collapse into one independent event and corrupt RAI.
             delta = (img.captured_at - prev_time).total_seconds()
             if delta > EVENT_GAP_SECONDS:
                 event_id += 1
-        elif prev_camera != img.camera_id:
+        else:
+            # Camera changed (including None <-> non-None).
             event_id += 1
 
         img.event_id = event_id
         prev_camera = img.camera_id
         prev_time = img.captured_at
+        started = True
 
     return event_id - current_max

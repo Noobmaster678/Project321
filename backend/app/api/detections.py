@@ -15,6 +15,16 @@ from backend.app.schemas.schemas import DetectionOut, DetectionDetail, Paginated
 router = APIRouter(prefix="/detections", tags=["Detections"])
 
 
+def _human_reviewed_detection_ids():
+    """Detection IDs that have a human species review decision.
+
+    Auto re-ID writes Annotation rows with individual_id only (is_correct left
+    NULL). Those must not count as reviewed, or verify/low-confidence queues
+    silently empty after MegaDescriptor auto-assign.
+    """
+    return select(Annotation.detection_id).where(Annotation.is_correct.isnot(None)).distinct()
+
+
 @router.get("/", response_model=PaginatedResponse)
 async def list_detections(
     page: int = Query(1, ge=1),
@@ -65,8 +75,7 @@ async def list_detections(
             pass
     if review_status is not None:
         if review_status == "unreviewed":
-            annotated_ids = select(Annotation.detection_id).distinct()
-            query = query.where(Detection.id.notin_(annotated_ids))
+            query = query.where(Detection.id.notin_(_human_reviewed_detection_ids()))
         elif review_status == "verified":
             verified_ids = select(Annotation.detection_id).where(Annotation.is_correct == True).distinct()  # noqa: E712
             query = query.where(Detection.id.in_(verified_ids))
@@ -106,13 +115,13 @@ async def species_counts(db: AsyncSession = Depends(get_db)):
 @router.get("/review-queue")
 async def review_queue(db: AsyncSession = Depends(get_db)):
     """Get counts for each review category used in the Pending Review page."""
-    annotated_ids = select(Annotation.detection_id).distinct()
+    reviewed_ids = _human_reviewed_detection_ids()
 
     quoll_unreviewed = (await db.execute(
         select(func.count(Detection.id)).where(
             and_(
                 Detection.species.ilike("%quoll%"),
-                Detection.id.notin_(annotated_ids),
+                Detection.id.notin_(reviewed_ids),
             )
         )
     )).scalar() or 0
@@ -121,7 +130,7 @@ async def review_queue(db: AsyncSession = Depends(get_db)):
         select(func.count(Detection.id)).where(
             and_(
                 Detection.category == "animal",
-                Detection.id.notin_(annotated_ids),
+                Detection.id.notin_(reviewed_ids),
                 (Detection.detection_confidence < 0.5) | (Detection.classification_confidence < 0.5),
             )
         )
@@ -149,7 +158,7 @@ async def review_queue(db: AsyncSession = Depends(get_db)):
 
     total_pending = (await db.execute(
         select(func.count(Detection.id)).where(
-            and_(Detection.category == "animal", Detection.id.notin_(annotated_ids))
+            and_(Detection.category == "animal", Detection.id.notin_(reviewed_ids))
         )
     )).scalar() or 0
 
