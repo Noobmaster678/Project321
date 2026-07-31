@@ -4,7 +4,7 @@ import io
 import json
 from datetime import date
 
-from sqlalchemy import select, func, extract, distinct
+from sqlalchemy import select, func, extract, distinct, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.image import Image
@@ -14,6 +14,66 @@ from backend.app.models.camera import Camera
 from backend.app.models.deployment import Deployment
 from backend.app.models.job import ProcessingJob
 from backend.app.services.reid_utils import quoll_sql_filter
+
+
+def _individual_id_exists(individual_id: str):
+    """Semi-join predicate so duplicate assignment annotations do not inflate counts."""
+    return exists(
+        select(Annotation.id).where(
+            Annotation.detection_id == Detection.id,
+            Annotation.individual_id.ilike(f"%{individual_id}%"),
+        )
+    )
+
+
+async def _scoped_trap_nights(
+    db: AsyncSession,
+    *,
+    camera_ids: list[int] | None = None,
+    collection_ids: list[int] | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    camera_name: str | None = None,
+) -> float:
+    """Trap-nights for the same spatial/temporal scope as the filtered event numerator.
+
+    Unfiltered reports keep stored Deployment.trap_nights. When camera/collection/date
+    filters are applied, derive effort from matching images so RAI is not diluted by
+    out-of-scope deployments.
+    """
+    has_scope = bool(camera_ids or collection_ids or date_from or date_to or camera_name)
+    if not has_scope:
+        return float((await db.execute(select(func.sum(Deployment.trap_nights)))).scalar() or 0.0)
+
+    q = (
+        select(
+            Image.camera_id,
+            Image.collection_id,
+            func.min(Image.captured_at).label("first"),
+            func.max(Image.captured_at).label("last"),
+        )
+        .where(Image.captured_at.isnot(None))
+    )
+    if camera_ids:
+        q = q.where(Image.camera_id.in_(camera_ids))
+    if collection_ids:
+        q = q.where(Image.collection_id.in_(collection_ids))
+    if date_from:
+        q = q.where(func.date(Image.captured_at) >= date_from)
+    if date_to:
+        q = q.where(func.date(Image.captured_at) <= date_to)
+    if camera_name:
+        q = q.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
+    q = q.group_by(Image.camera_id, Image.collection_id)
+
+    total = 0.0
+    for row in (await db.execute(q)).all():
+        first, last = row.first, row.last
+        if first is None or last is None:
+            continue
+        delta = (last - first).total_seconds() / 86400.0
+        total += max(delta, 1.0)
+    return total
 
 
 async def generate_summary_report(
@@ -66,9 +126,7 @@ async def generate_summary_report(
     if species_filter:
         det_query = det_query.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
-        det_query = det_query.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+        det_query = det_query.where(_individual_id_exists(individual_id))
 
     det_ids = det_query.subquery()
     det_count_q = select(func.count()).select_from(det_ids)
@@ -93,9 +151,7 @@ async def generate_summary_report(
     if species_filter:
         sp_q = sp_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
-        sp_q = sp_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+        sp_q = sp_q.where(_individual_id_exists(individual_id))
     sp_q = sp_q.group_by(Detection.species).order_by(func.count(Detection.id).desc())
     species_rows = (await db.execute(sp_q)).all()
     species_distribution = [{"species": r[0], "count": r[1]} for r in species_rows]
@@ -121,9 +177,7 @@ async def generate_summary_report(
     if species_filter:
         conf_q = conf_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
-        conf_q = conf_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+        conf_q = conf_q.where(_individual_id_exists(individual_id))
     mean_det_conf, mean_cls_conf = (await db.execute(conf_q)).one()
 
     # Camera counts
@@ -145,9 +199,7 @@ async def generate_summary_report(
     if species_filter:
         cam_q = cam_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
-        cam_q = cam_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+        cam_q = cam_q.where(_individual_id_exists(individual_id))
     cam_q = cam_q.group_by(Camera.name).order_by(func.count(Detection.id).desc())
     cam_rows = (await db.execute(cam_q)).all()
     camera_counts = [{"camera": r[0], "detections": r[1]} for r in cam_rows]
@@ -171,9 +223,7 @@ async def generate_summary_report(
     if species_filter:
         hourly_q = hourly_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
-        hourly_q = hourly_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+        hourly_q = hourly_q.where(_individual_id_exists(individual_id))
     hourly_q = hourly_q.group_by("hour").order_by("hour")
     hourly_rows = (await db.execute(hourly_q)).all()
     hourly_activity = [{"hour": int(r[0]), "detections": r[1]} for r in hourly_rows]
@@ -200,9 +250,7 @@ async def generate_summary_report(
     if species_filter:
         month_q = month_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
-        month_q = month_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+        month_q = month_q.where(_individual_id_exists(individual_id))
     month_q = month_q.group_by("year", "month").order_by("year", "month")
     month_rows = (await db.execute(month_q)).all()
     monthly_activity = [
@@ -287,9 +335,7 @@ async def generate_summary_report(
     if species_filter:
         recent_q = recent_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
-        recent_q = recent_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
-        )
+        recent_q = recent_q.where(_individual_id_exists(individual_id))
     recent_rows = (await db.execute(recent_q)).all()
     recent_sightings = [
         {
@@ -304,9 +350,15 @@ async def generate_summary_report(
     ]
 
     # RAI: Relative Abundance Index = (independent events / trap-nights) * 100
-    total_trap_nights_val = (await db.execute(
-        select(func.sum(Deployment.trap_nights))
-    )).scalar() or 0.0
+    # Denominator must match the filtered event scope (not global deployments).
+    total_trap_nights_val = await _scoped_trap_nights(
+        db,
+        camera_ids=camera_ids,
+        collection_ids=collection_ids,
+        date_from=date_from,
+        date_to=date_to,
+        camera_name=camera_name,
+    )
 
     rai_data: list[dict] = []
     if total_trap_nights_val > 0:
@@ -332,9 +384,7 @@ async def generate_summary_report(
         if species_filter:
             event_species_q = event_species_q.where(Detection.species.ilike(f"%{species_filter}%"))
         if individual_id:
-            event_species_q = event_species_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-                Annotation.individual_id.ilike(f"%{individual_id}%")
-            )
+            event_species_q = event_species_q.where(_individual_id_exists(individual_id))
         event_species_q = event_species_q.group_by(Detection.species).order_by(func.count(distinct(Image.event_id)).desc())
         event_rows = (await db.execute(event_species_q)).all()
         for row in event_rows:
