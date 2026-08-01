@@ -1,6 +1,6 @@
 """Annotation CRUD endpoints for ecologist review workflow."""
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.session import get_db
@@ -15,6 +15,23 @@ from backend.app.utils.dependencies import get_current_user
 router = APIRouter(prefix="/annotations", tags=["Annotations"])
 
 
+async def _clear_individual_assignments(db: AsyncSession, detection_id: int) -> None:
+    """Remove every active individual assignment for a detection.
+
+    Profile/gallery queries treat any non-null Annotation.individual_id as an
+    active membership, including auto re-ID rows. Species corrections must not
+    leave those IDs attached to a now-rejected detection.
+    """
+    await db.execute(
+        sa_update(Annotation)
+        .where(
+            Annotation.detection_id == detection_id,
+            Annotation.individual_id.isnot(None),
+        )
+        .values(individual_id=None)
+    )
+
+
 @router.post("/", response_model=AnnotationOut, status_code=status.HTTP_201_CREATED)
 async def create_annotation(
     payload: AnnotationCreate,
@@ -26,14 +43,17 @@ async def create_annotation(
     if not det:
         raise HTTPException(status_code=404, detail="Detection not found")
 
-    if payload.individual_id:
+    # Incorrect species labels invalidate any prior individual identity.
+    assign_individual_id = None if payload.is_correct is False else payload.individual_id
+
+    if assign_individual_id:
         ind = (await db.execute(
-            select(Individual).where(Individual.individual_id == payload.individual_id)
+            select(Individual).where(Individual.individual_id == assign_individual_id)
         )).scalar_one_or_none()
         if not ind:
             raise HTTPException(
                 status_code=404,
-                detail=f"Individual '{payload.individual_id}' does not exist. Create the profile first.",
+                detail=f"Individual '{assign_individual_id}' does not exist. Create the profile first.",
             )
 
     ann = Annotation(
@@ -42,22 +62,32 @@ async def create_annotation(
         corrected_species=payload.corrected_species,
         is_correct=payload.is_correct,
         notes=payload.notes,
-        individual_id=payload.individual_id,
+        individual_id=assign_individual_id,
         flag_for_retraining=payload.flag_for_retraining,
     )
     db.add(ann)
     await db.flush()
-    if payload.individual_id:
+    if payload.is_correct is False:
+        await _clear_individual_assignments(db, payload.detection_id)
         await resolve_reid_suggestions(
             db,
             detection_id=payload.detection_id,
-            chosen_individual_id=payload.individual_id,
+            chosen_individual_id=None,
+            annotator=user.email,
+        )
+        await db.refresh(ann)
+        return AnnotationOut.model_validate(ann)
+    if assign_individual_id:
+        await resolve_reid_suggestions(
+            db,
+            detection_id=payload.detection_id,
+            chosen_individual_id=assign_individual_id,
             annotator=user.email,
         )
         await incremental_update_from_detection(
             db,
             detection_id=payload.detection_id,
-            individual_id=payload.individual_id,
+            individual_id=assign_individual_id,
         )
     await db.refresh(ann)
     return AnnotationOut.model_validate(ann)
@@ -89,6 +119,10 @@ async def update_annotation(
 
     before_individual = ann.individual_id
     updates = payload.model_dump(exclude_unset=True)
+    after_is_correct = updates.get("is_correct", ann.is_correct)
+    if after_is_correct is False:
+        # Species rejection must not keep this detection on an individual profile.
+        updates["individual_id"] = None
     after_individual = updates.get("individual_id", before_individual)
     if after_individual:
         ind = (
@@ -107,6 +141,16 @@ async def update_annotation(
     ann.annotator = user.email
 
     await db.flush()
+    if after_is_correct is False:
+        await _clear_individual_assignments(db, ann.detection_id)
+        await resolve_reid_suggestions(
+            db,
+            detection_id=ann.detection_id,
+            chosen_individual_id=None,
+            annotator=user.email,
+        )
+        await db.refresh(ann)
+        return AnnotationOut.model_validate(ann)
     if "individual_id" in updates and ann.individual_id:
         await resolve_reid_suggestions(
             db,
