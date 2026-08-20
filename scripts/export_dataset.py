@@ -23,7 +23,7 @@ from backend.app.db.session import async_session_factory, engine
 from backend.app.db.base import Base
 from backend.app.models.image import Image
 from backend.app.models.detection import Detection
-from backend.app.models.annotation import Annotation
+from backend.app.models.annotation import Annotation, merge_annotation_review_fields
 from backend.app.models.camera import Camera
 
 
@@ -56,7 +56,7 @@ async def export_detections(
 
         rows = []
         for d in dets:
-            ann = d.annotations[0] if d.annotations else None
+            ann = merge_annotation_review_fields(d.annotations)
             rows.append({
                 "detection_id": d.id,
                 "image_id": d.image_id,
@@ -70,10 +70,10 @@ async def export_detections(
                 "bbox": f"{d.bbox_x},{d.bbox_y},{d.bbox_w},{d.bbox_h}",
                 "model_version": d.model_version,
                 "crop_path": d.crop_path,
-                "annotation_correct": ann.is_correct if ann else None,
-                "annotation_species": ann.corrected_species if ann else None,
-                "annotation_individual": ann.individual_id if ann else None,
-                "flagged_retraining": ann.flag_for_retraining if ann else None,
+                "annotation_correct": ann["is_correct"],
+                "annotation_species": ann["corrected_species"],
+                "annotation_individual": ann["individual_id"],
+                "flagged_retraining": ann["flag_for_retraining"],
             })
 
         if fmt == "csv":
