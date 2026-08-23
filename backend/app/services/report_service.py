@@ -16,6 +16,16 @@ from backend.app.models.job import ProcessingJob
 from backend.app.services.reid_utils import quoll_sql_filter
 
 
+def annotation_individual_id_equals(individual_id: str):
+    """Exact individual-ID match for report/export filters.
+
+    IDs follow the ``{camera}Q{n}`` scheme (``02Q1``, ``02Q10``). A wildcard
+    ``ILIKE %id%`` treats ``02Q1`` as a substring of ``02Q10``/``02Q11`` and
+    silently mixes those animals into filtered reports and researcher exports.
+    """
+    return Annotation.individual_id == individual_id
+
+
 async def generate_summary_report(
     db: AsyncSession,
     species_filter: str | None = None,
@@ -67,7 +77,7 @@ async def generate_summary_report(
         det_query = det_query.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
         det_query = det_query.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
+            annotation_individual_id_equals(individual_id)
         )
 
     det_ids = det_query.subquery()
@@ -94,7 +104,7 @@ async def generate_summary_report(
         sp_q = sp_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
         sp_q = sp_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
+            annotation_individual_id_equals(individual_id)
         )
     sp_q = sp_q.group_by(Detection.species).order_by(func.count(Detection.id).desc())
     species_rows = (await db.execute(sp_q)).all()
@@ -122,7 +132,7 @@ async def generate_summary_report(
         conf_q = conf_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
         conf_q = conf_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
+            annotation_individual_id_equals(individual_id)
         )
     mean_det_conf, mean_cls_conf = (await db.execute(conf_q)).one()
 
@@ -146,7 +156,7 @@ async def generate_summary_report(
         cam_q = cam_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
         cam_q = cam_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
+            annotation_individual_id_equals(individual_id)
         )
     cam_q = cam_q.group_by(Camera.name).order_by(func.count(Detection.id).desc())
     cam_rows = (await db.execute(cam_q)).all()
@@ -172,7 +182,7 @@ async def generate_summary_report(
         hourly_q = hourly_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
         hourly_q = hourly_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
+            annotation_individual_id_equals(individual_id)
         )
     hourly_q = hourly_q.group_by("hour").order_by("hour")
     hourly_rows = (await db.execute(hourly_q)).all()
@@ -201,7 +211,7 @@ async def generate_summary_report(
         month_q = month_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
         month_q = month_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
+            annotation_individual_id_equals(individual_id)
         )
     month_q = month_q.group_by("year", "month").order_by("year", "month")
     month_rows = (await db.execute(month_q)).all()
@@ -288,7 +298,7 @@ async def generate_summary_report(
         recent_q = recent_q.where(Detection.species.ilike(f"%{species_filter}%"))
     if individual_id:
         recent_q = recent_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
+            annotation_individual_id_equals(individual_id)
         )
     recent_rows = (await db.execute(recent_q)).all()
     recent_sightings = [
@@ -333,7 +343,7 @@ async def generate_summary_report(
             event_species_q = event_species_q.where(Detection.species.ilike(f"%{species_filter}%"))
         if individual_id:
             event_species_q = event_species_q.join(Annotation, Annotation.detection_id == Detection.id).where(
-                Annotation.individual_id.ilike(f"%{individual_id}%")
+                annotation_individual_id_equals(individual_id)
             )
         event_species_q = event_species_q.group_by(Detection.species).order_by(func.count(distinct(Image.event_id)).desc())
         event_rows = (await db.execute(event_species_q)).all()

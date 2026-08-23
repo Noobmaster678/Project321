@@ -19,6 +19,7 @@ from backend.app.models.image import Image
 from backend.app.models.annotation import Annotation
 from backend.app.models.camera import Camera
 from backend.app.utils.dependencies import get_current_user
+from backend.app.services.report_service import annotation_individual_id_equals
 
 router = APIRouter(prefix="/exports", tags=["Exports"])
 
@@ -52,7 +53,7 @@ async def export_quoll_detections(
         query = query.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
     if individual_id:
         query = query.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
+            annotation_individual_id_equals(individual_id)
         )
 
     dets = (await db.execute(query)).scalars().all()
@@ -123,7 +124,7 @@ async def export_metadata(
         query = query.join(Camera, Camera.id == Image.camera_id).where(Camera.name == camera_name)
     if individual_id:
         query = query.join(Annotation, Annotation.detection_id == Detection.id).where(
-            Annotation.individual_id.ilike(f"%{individual_id}%")
+            annotation_individual_id_equals(individual_id)
         )
     dets = (await db.execute(query)).scalars().all()
 
