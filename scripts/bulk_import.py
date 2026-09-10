@@ -212,6 +212,65 @@ async def scan_dataset(
     return stats
 
 
+def _csv_cell(value) -> str:
+    """Normalize a pandas CSV cell to a stripped string, treating NaN as empty."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return ""
+    return text
+
+
+def _parse_csv_camera_number(raw: str) -> int | None:
+    """Parse CSV camera_id (int or pandas float like 1.0) to Camera.camera_number."""
+    if not raw:
+        return None
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+async def find_image_for_csv_row(
+    db: AsyncSession,
+    *,
+    filename: str,
+    collection_name: str,
+    camera_number: int | None,
+) -> tuple[Image | None, str | None]:
+    """Resolve a CSV sighting row to a unique Image.
+
+    Reconyx files reuse names like RCNX0001.JPG on every station, so filename
+    (even within one collection) is not unique. Match collection + camera_number
+    + filename, matching scripts/organize_ided_images.py.
+
+    Returns (image, error). error is set when zero or several rows match.
+    """
+    query = select(Image).where(Image.filename == filename)
+    if collection_name:
+        query = query.join(Collection, Collection.id == Image.collection_id).where(
+            Collection.name == collection_name
+        )
+    if camera_number is not None:
+        query = query.join(Camera, Camera.id == Image.camera_id).where(
+            Camera.camera_number == camera_number
+        )
+
+    matches = (await db.execute(query)).scalars().all()
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) == 0:
+        return None, (
+            f"No image for filename={filename!r} collection={collection_name!r} "
+            f"camera_number={camera_number}"
+        )
+    return None, (
+        f"Ambiguous image match for filename={filename!r} collection={collection_name!r} "
+        f"camera_number={camera_number} ({len(matches)} rows; Reconyx names collide across cameras)"
+    )
+
+
 async def load_csv_ground_truth(
     db: AsyncSession,
     csv_path: Path,
@@ -235,12 +294,12 @@ async def load_csv_ground_truth(
 
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Loading CSV"):
         try:
-            ind_id = str(row.get("individual_id", "")).strip()
-            filename = str(row.get("filename", "")).strip()
-            identified_by = str(row.get("identified_by", "")).strip()
-            camera_id_csv = str(row.get("camera_id", "")).strip()
-            collection_name = str(row.get("collection_id", "")).strip()
-            timestamp_str = str(row.get("timestamp", "")).strip()
+            ind_id = _csv_cell(row.get("individual_id", ""))
+            filename = _csv_cell(row.get("filename", ""))
+            identified_by = _csv_cell(row.get("identified_by", ""))
+            camera_id_csv = _csv_cell(row.get("camera_id", ""))
+            collection_name = _csv_cell(row.get("collection_id", ""))
+            timestamp_str = _csv_cell(row.get("timestamp", ""))
 
             if not ind_id or not filename:
                 continue
@@ -274,14 +333,15 @@ async def load_csv_ground_truth(
                     individual_cache[ind_id] = ind
                     stats["individuals_created"] += 1
 
-            # Find matching image in DB
-            image_query = select(Image).where(Image.filename == filename)
-            if collection_name:
-                image_query = image_query.join(
-                    Collection, Collection.id == Image.collection_id
-                ).where(Collection.name == collection_name)
-
-            img = (await db.execute(image_query)).scalar_one_or_none()
+            camera_number = _parse_csv_camera_number(camera_id_csv)
+            img, match_error = await find_image_for_csv_row(
+                db,
+                filename=filename,
+                collection_name=collection_name,
+                camera_number=camera_number,
+            )
+            if match_error:
+                stats["errors"].append(f"{ind_id}/{filename}: {match_error}")
 
             if img:
                 # Update image captured_at if we have it
