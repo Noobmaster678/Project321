@@ -126,6 +126,30 @@ def _storage_url(rel: str | None) -> str | None:
     return "/storage/" + rel.replace("\\", "/")
 
 
+def _detection_gallery_score(det: Detection) -> tuple[int, int]:
+    """Prefer a quoll crop when a CSV sighting is image-level (no detection_id)."""
+    species = (det.species or "").lower()
+    return (
+        1 if "quoll" in species else 0,
+        1 if det.crop_path else 0,
+    )
+
+
+def _gallery_item(img: Image, det: Detection | None) -> dict:
+    crop_rel = det.crop_path if det else None
+    thumb_rel = img.thumbnail_path
+    file_rel = img.file_path
+    display = _storage_url(thumb_rel) or _storage_url(crop_rel) or _storage_url(file_rel)
+    return {
+        "image_id": img.id,
+        "detection_id": det.id if det else None,
+        "captured_at": str(img.captured_at) if img.captured_at else None,
+        "thumb_url": _storage_url(thumb_rel),
+        "crop_url": _storage_url(crop_rel),
+        "display_url": display,
+    }
+
+
 @router.get("/individuals")
 async def individual_stats(db: AsyncSession = Depends(get_db)):
     """List individuals from `individuals` table merged with IDs assigned in review (annotations).
@@ -204,13 +228,39 @@ async def individual_stats(db: AsyncSession = Depends(get_db)):
 
 @router.get("/individuals/{individual_id}/gallery")
 async def individual_gallery(individual_id: str, db: AsyncSession = Depends(get_db)):
-    """Thumbnails/crops: sightings table first (if Individual row exists), else annotations."""
+    """Thumbnails/crops from CSV sightings merged with review annotations.
+
+    Bulk CSV import writes ``Sighting`` rows with ``detection_id=NULL`` and never
+    generates thumbnails. The ML pipeline stores crops on ``Detection`` but does
+    not back-link those rows onto the sighting. Joining only on
+    ``Sighting.detection_id`` therefore left ``display_url`` empty, and a
+    non-empty sightings result skipped annotation-assigned crops entirely.
+    """
     ind_row = (
         await db.execute(select(Individual).where(Individual.individual_id == individual_id))
     ).scalar_one_or_none()
 
     items: list[dict] = []
     seen: set[tuple[int, int | None]] = set()
+    used_images: set[int] = set()
+    sources: set[str] = set()
+
+    def _append(img: Image, det: Detection | None, source: str) -> None:
+        key = (img.id, det.id if det else None)
+        if key in seen:
+            return
+        if det is None and img.id in used_images:
+            return
+        if det is not None and (img.id, None) in seen:
+            items[:] = [
+                it for it in items
+                if not (it["image_id"] == img.id and it["detection_id"] is None)
+            ]
+            seen.discard((img.id, None))
+        seen.add(key)
+        used_images.add(img.id)
+        sources.add(source)
+        items.append(_gallery_item(img, det))
 
     if ind_row:
         sight_q = (
@@ -220,55 +270,46 @@ async def individual_gallery(individual_id: str, db: AsyncSession = Depends(get_
             .where(Sighting.individual_id == ind_row.id)
             .order_by(Image.captured_at.desc().nulls_last(), Sighting.id.desc())
         )
-        for sight, img, det in (await db.execute(sight_q)).all():
-            key = (img.id, det.id if det else None)
-            if key in seen:
-                continue
-            seen.add(key)
-            crop_rel = det.crop_path if det else None
-            thumb_rel = img.thumbnail_path
-            display = _storage_url(thumb_rel) or _storage_url(crop_rel)
-            items.append(
-                {
-                    "image_id": img.id,
-                    "detection_id": det.id if det else None,
-                    "captured_at": str(img.captured_at) if img.captured_at else None,
-                    "thumb_url": _storage_url(thumb_rel),
-                    "crop_url": _storage_url(crop_rel),
-                    "display_url": display,
-                }
-            )
+        pending_images: list[Image] = []
+        for _sight, img, det in (await db.execute(sight_q)).all():
+            if det is None:
+                pending_images.append(img)
+            else:
+                _append(img, det, "sightings")
 
-    if not items:
-        ann_q = (
-            select(Detection, Image)
-            .join(Image, Detection.image_id == Image.id)
-            .join(Annotation, Annotation.detection_id == Detection.id)
-            .where(Annotation.individual_id == individual_id)
-            .order_by(Image.captured_at.desc().nulls_last(), Detection.id.desc())
-        )
-        for det, img in (await db.execute(ann_q)).all():
-            key = (img.id, det.id)
-            if key in seen:
-                continue
-            seen.add(key)
-            thumb_rel = img.thumbnail_path
-            crop_rel = det.crop_path
-            display = _storage_url(thumb_rel) or _storage_url(crop_rel)
-            items.append(
-                {
-                    "image_id": img.id,
-                    "detection_id": det.id,
-                    "captured_at": str(img.captured_at) if img.captured_at else None,
-                    "thumb_url": _storage_url(thumb_rel),
-                    "crop_url": _storage_url(crop_rel),
-                    "display_url": display,
-                }
-            )
-        src = "annotations" if items else "none"
-    else:
+        if pending_images:
+            img_ids = list({im.id for im in pending_images})
+            det_rows = (
+                await db.execute(select(Detection).where(Detection.image_id.in_(img_ids)))
+            ).scalars().all()
+            best_by_image: dict[int, Detection] = {}
+            for det in det_rows:
+                prev = best_by_image.get(det.image_id)
+                if prev is None or _detection_gallery_score(det) > _detection_gallery_score(prev):
+                    best_by_image[det.image_id] = det
+            for img in pending_images:
+                _append(img, best_by_image.get(img.id), "sightings")
+
+    ann_q = (
+        select(Detection, Image)
+        .join(Image, Detection.image_id == Image.id)
+        .join(Annotation, Annotation.detection_id == Detection.id)
+        .where(Annotation.individual_id == individual_id)
+        .order_by(Image.captured_at.desc().nulls_last(), Detection.id.desc())
+    )
+    for det, img in (await db.execute(ann_q)).all():
+        _append(img, det, "annotations")
+
+    if "sightings" in sources and "annotations" in sources:
+        src = "merged"
+    elif "sightings" in sources:
         src = "sightings"
+    elif "annotations" in sources:
+        src = "annotations"
+    else:
+        src = "none"
 
+    items.sort(key=lambda it: it["captured_at"] or "", reverse=True)
     return {"individual_id": individual_id, "items": items, "source": src}
 
 
