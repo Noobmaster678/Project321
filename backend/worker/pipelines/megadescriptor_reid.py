@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -95,9 +96,16 @@ def _ensure_state(gallery_path: Path) -> dict[str, Any] | None:
             ckpt = torch.load(path_res, map_location="cpu")
         prototypes = ckpt["prototypes"].float().cpu()
         class_names = [str(x) for x in ckpt["class_names"]]
-        prototype_counts = ckpt.get("prototype_counts")
-        if not isinstance(prototype_counts, list) or len(prototype_counts) != len(class_names):
-            prototype_counts = [1 for _ in class_names]
+        # Missing counts must stay missing. Substituting 1 makes one new crop
+        # equal to the whole historical mean the next time a review confirms an ID.
+        from backend.app.services.reid_gallery_update import counts_are_trusted
+
+        raw_counts = ckpt.get("prototype_counts")
+        prototype_counts = (
+            [int(c) for c in raw_counts]
+            if counts_are_trusted(raw_counts, len(class_names))
+            else None
+        )
         model = timm.create_model(MEGADESCRIPTOR_MODEL, pretrained=True)
         model.eval()
         for p in model.parameters():
@@ -257,32 +265,39 @@ def embed_crop(crop_abs_path: Path, gallery_path: Path) -> torch.Tensor | None:
 
 
 def incremental_update_gallery(gallery_path: Path, individual_id: str, embedding: torch.Tensor) -> bool:
-    """Update or append an individual's prototype in the saved gallery."""
+    """Update or append an individual's prototype in the saved gallery.
+
+    Returns False and leaves the file untouched when the checkpoint has no
+    per-identity sample counts. Those galleries are means over a training
+    set; pretending each mean is a single sample corrupts the prototype.
+    """
     st = _ensure_state(gallery_path)
     if st is None:
         return False
-    names: list[str] = st["class_names"]
-    protos: torch.Tensor = st["prototypes"]
-    emb = F.normalize(embedding.float().view(1, -1), p=2, dim=1).cpu().squeeze(0)
-    counts = st.get("prototype_counts")
-    if not isinstance(counts, list) or len(counts) != len(names):
-        counts = [1 for _ in names]
+    from backend.app.services.reid_gallery_update import apply_counted_prototype_update
 
-    if individual_id in names:
-        idx = names.index(individual_id)
-        n = max(1, int(counts[idx]))
-        updated = F.normalize((protos[idx] * n) + emb, p=2, dim=0)
-        protos[idx] = updated
-        counts[idx] = n + 1
-    else:
-        names.append(individual_id)
-        protos = torch.cat([protos, emb.unsqueeze(0)], dim=0)
-        counts.append(1)
+    names: list[str] = list(st["class_names"])
+    protos: torch.Tensor = st["prototypes"]
+    updated = apply_counted_prototype_update(
+        names,
+        protos.detach().float().cpu().numpy(),
+        st.get("prototype_counts"),
+        individual_id,
+        embedding.detach().float().cpu().numpy(),
+    )
+    if updated is None:
+        logger.info(
+            "megadescriptor_reid: skipped prototype update for %s; gallery has no sample counts",
+            individual_id,
+        )
+        return False
+    new_names, new_protos, new_counts = updated
+    protos = torch.from_numpy(np.ascontiguousarray(new_protos)).float()
 
     ckpt = {
         "prototypes": protos.cpu(),
-        "class_names": names,
-        "prototype_counts": counts,
+        "class_names": new_names,
+        "prototype_counts": new_counts,
         "gallery_version": int(st.get("gallery_version", 1)) + 1,
     }
     tmp_path = gallery_path.with_suffix(".tmp.pt")
@@ -290,8 +305,8 @@ def incremental_update_gallery(gallery_path: Path, individual_id: str, embedding
     tmp_path.replace(gallery_path)
 
     st["prototypes"] = protos.cpu()
-    st["class_names"] = names
-    st["prototype_counts"] = counts
+    st["class_names"] = new_names
+    st["prototype_counts"] = new_counts
     st["gallery_version"] = ckpt["gallery_version"]
     try:
         stat = gallery_path.stat()
