@@ -169,8 +169,8 @@ def build_prototypes(
     class_names: list[str],
     device: str,
     batch_size: int,
-) -> torch.Tensor:
-    """Mean embedding per class, L2-normalized -> [C, D]."""
+) -> tuple[torch.Tensor, list[int]]:
+    """Mean embedding per class, L2-normalized -> ([C, D], sample counts)."""
     loader = DataLoader(
         MegaDataset(train_items, train=False),
         batch_size=min(batch_size, max(1, len(train_items))),
@@ -199,7 +199,7 @@ def build_prototypes(
             raise RuntimeError(f"No train samples for class index {c}")
         v = sums[c] / counts[c]
         protos.append(F.normalize(v.unsqueeze(0), p=2, dim=1).squeeze(0))
-    return torch.stack(protos, dim=0)
+    return torch.stack(protos, dim=0), counts
 
 
 def predict_prototype(
@@ -537,12 +537,15 @@ def run(cfg: Config) -> None:
         id_to_paths = collect_dataset(cfg)
         train_items, test_items, class_names = split_per_id(id_to_paths, cfg.test_ratio, cfg.seed)
         print(f"Train samples: {len(train_items)}, test samples: {len(test_items)}")
-        prototypes = build_prototypes(model, train_items, class_names, device, cfg.batch_size)
+        prototypes, prototype_counts = build_prototypes(
+            model, train_items, class_names, device, cfg.batch_size
+        )
         cfg.output.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
                 "prototypes": prototypes,
                 "class_names": class_names,
+                "prototype_counts": prototype_counts,
                 "model": MEGADESCRIPTOR_MODEL,
                 "image_size": IMAGE_SIZE,
                 "normalize": "0.5",
